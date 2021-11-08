@@ -1,0 +1,88 @@
+---
+title: "Integrate 9 Batches of Data"
+output: html_notebook
+---
+
+This notebook uses Seurat v3 to perform normalization (SCTransform) and data integration. TCR information was also appended to the meta.data slot.
+
+
+```{r}
+rm(list = ls())
+dir_proj <- "/singerlab/linglin/Th17_single_cell/"
+dir_lib <- "~/R/x86_64-pc-linux-gnu-library/lib_th17/" ## v3.2.2
+dir_out <- paste0(dir_proj, "output/results/preprocessing/integration/")
+if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+
+suppressPackageStartupMessages({
+  library(Seurat, lib.loc = dir_lib)
+})
+```
+
+
+
+```{r}
+## read data
+so_list <- readRDS(paste0(dir_proj, "output/preprocessing/QC/so_list.rds"))
+
+### rename cells to make sure they are unique
+so_list <- lapply(so_list, function(so) {
+  RenameCells(so, new.names = paste(so$orig.ident, colnames(so), sep = "_"))
+})
+  
+### merge samples in each batch
+batch_vec <- paste0("batch", 1:9)
+treatment_vec <- c("EAE", "UT")
+mouse_vec <- c("m1", "m2")
+so_list_merged <- list()
+for (batch in batch_vec) {
+  if (batch %in% batch_vec[1:5]) { # non-hashing batch
+    sample_name <- batch
+    cat("Merging", sample_name, "...\n")
+    tmp <- so_list[grep(sample_name, names(so_list))]
+    if (length(tmp) == 0) next
+    so_list_merged[[sample_name]] <- merge(tmp[[1]], tmp[-1])
+  } else { #hashing batch
+    for (treatment in treatment_vec) {
+      for (mouse in mouse_vec) {
+        sample_name <- paste(treatment, batch, mouse, sep = "_")
+        cat("Merging", sample_name, "...\n")
+        tmp <- so_list[grep(sample_name, names(so_list))]
+        if (length(tmp) == 0) next
+        so_list_merged[[sample_name]] <- merge(tmp[[1]], tmp[-1])
+      }
+    }
+  }
+}
+rm(so_list, tmp)
+# saveRDS(so_list_merged, file = paste0(dir_out, "so_merged.rds"))
+# so_list_merged = readRDS(file = paste0(dir_out, "so_merged.rds"))
+
+#### integrate data from different batches
+## SCTransform
+so_list_merged <- lapply(so_list_merged, FUN = SCTransform, return.only.var.genes = FALSE)
+saveRDS(so_list_merged, file = paste0(dir_out, "so_SCTransformed.rds"))
+so_list_merged <- readRDS(file = paste0(dir_out, "so_SCTransformed.rds"))
+
+## Integration
+all_commom_features <- Reduce(intersect, lapply(so_list_merged, rownames)) ## genes
+features <- SelectIntegrationFeatures(object.list = so_list_merged, nfeatures = Inf)
+so_list_merged <- PrepSCTIntegration(object.list = so_list_merged,
+                                     anchor.features = features,
+                                     verbose = FALSE)
+so_list_merged <- lapply(X = so_list_merged,
+                         FUN = RunPCA,
+                         verbose = FALSE,
+                         features = features)
+anchors <- FindIntegrationAnchors(object.list = so_list_merged,
+                                      normalization.method = "SCT",
+                                      reduction = "rpca",
+                                      anchor.features = features,
+                                      verbose = TRUE)
+# saveRDS(anchors, file = paste0(dir_out, "anchors.rds"))
+# anchors <- readRDS(file = paste0(dir_out, "anchors.rds"))
+so_integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT", 
+                               verbose = TRUE)
+
+saveRDS(so_integrated, file = paste0(dir_out, "so_integrated_SCTransformed.rds"))
+```
+

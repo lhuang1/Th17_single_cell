@@ -1,0 +1,160 @@
+---
+title: "Clean out Irrelavant Cell Types or Possible Contaminations"
+output: html_notebook
+---
+
+This notebook uses a list of markers to iteratively detect and remove possible contamination (i.e. myeloid cells). In each round, (over-)clustering was performed on integrated data for each tissue x treatment combination. Clusters stained for contamination markers were removed.
+
+(We did 3 rounds of cleaning.)
+
+```{r}
+rm(list = ls())
+dir_proj <- "/singerlab/linglin/Th17_single_cell/"
+dir_lib <- "~/R/x86_64-pc-linux-gnu-library/lib_th17/" ## v3.2.2
+dir_out <- paste0(dir_proj, "output/results/preprocessing/cleaning/")
+if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+
+suppressPackageStartupMessages({
+  library(Seurat, lib.loc = dir_lib)
+})
+source(paste0(dir_proj, "code/util.R"))
+source(paste0(dir_proj, "code/preprocess/util_preprocessing.R"))
+```
+
+
+
+```{r}
+## load data
+so_integrated_all <- readRDS(file = paste0(dir_proj, "output/results/preprocessing/integration/so_integrated_SCTransformed.rds"))
+
+# genes of interest and contamination markers
+cont_markers <- read.table(paste0(dir_proj, "data/gene_lists/genes_for_cleanup.csv"), stringsAsFactors = FALSE)[,1]
+genes_of_interest <- read.table(paste0(dir_proj, "data/gene_lists/genes_of_interest.csv"), stringsAsFactors = FALSE)[,1]
+
+# tissue and treatment info
+tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL", "CNS", "DLN")
+treatment_vec <- c("UT", "EAE")
+```
+
+After each round, Alex S. examines the clusters and make a list of clusters to remove.
+
+```{r}
+clean_round = 0 # first round
+
+if (clean_round != 0) { # not initial round; need to take out clusters
+  # read clusters to take out
+  dir_last_round <- paste0("output/results/preprocessing/cleaning/round_", clean_round - 1, "/")
+  if (!dir.exists(dir_last_round)) {
+    stop("Last round not found! Double check $clean_round parameter.")
+  }
+  take_out <- read.csv(file = paste0(dir_last_round, "clusters_take_out.csv"), header = F, row.names = 1)
+  keep_cells <- list()
+  for (i in rownames(take_out)) {
+    clusters_i <- as.numeric(take_out[i,])
+    clusters_i <- clusters_i[!is.na(clusters_i)]
+    meta <- read.table(file = paste0(dir_last_round, i, "/FILES/meta_data.txt"), stringsAsFactors = F)
+    keep_cells[[i]] <- rownames(meta)[!meta$seurat_clusters %in% clusters_i]
+  }
+  so_integrated_all <- so_integrated_all[,unlist(keep_cells)]
+  saveRDS(colnames(so_integrated_all), file = paste0(dir_out, "keep_cell_names.rds"))
+} 
+
+
+for (tissue in tissue_vec) {
+  for (treatment in treatment_vec) {
+    if (treatment == 'UT' & tissue %in% c("CNS", "DLN")) next
+    sample_name <- paste(tissue, treatment, sep = "_")
+    cat("\n\n", sample_name, "...\n")
+    dir.create(paste0(dir_out, sample_name, "/FILES"), recursive = T, showWarnings = F)
+    dir.create(paste0(dir_out, sample_name, "/PLOTS"), recursive = T, showWarnings = F)
+    
+    so_integrated <- so_integrated_all[,so_integrated_all$tissue == tissue & so_integrated_all$treatment == treatment]
+    
+    ## Clustering
+    so_integrated <- ScaleData(object = so_integrated, verbose = TRUE)
+    so_integrated <- RunPCA(object = so_integrated, npcs = 50, verbose = TRUE)
+    pdf(paste0(dir_out, sample_name, "/PLOTS/PCA_Elbow.pdf"))
+    print(ElbowPlot(object = so_integrated, ndims = 50))
+    dev.off()
+    write.table(Embeddings(so_integrated, reduction = "pca"), 
+                file = paste0(dir_out, sample_name, "/FILES/coords_pca.txt"), quote = F)
+    
+    # clusteirng
+    so_integrated <- FindNeighbors(object = so_integrated, dims = 1:20)
+    so_integrated <- FindClusters(object = so_integrated, resolution = 1.2)
+    write.table(so_integrated@meta.data, 
+                file = paste0(dir_out, sample_name, "/FILES/meta_data.txt"), quote = F)
+    
+    # UMAP
+    so_integrated <- RunUMAP(object = so_integrated, verbose = FALSE, dims = 1:20, 
+                             n.neighbors = 30, min.dist = 0.3, seed.use = 1)
+    write.table(Embeddings(so_integrated, reduction = "umap"), 
+                file = paste0(dir_out, sample_name, "/FILES/coords_umap.txt"), quote = F)
+    
+    # plot overview
+    pdf(file = paste0(dir_out, sample_name, "/PLOTS/UMAP_overview.pdf"), width = 12)
+    p <- so_integrated@meta.data %>%
+      group_by(seurat_clusters) %>% summarize(count = n()) %>%
+      ggplot(aes(x=seurat_clusters, y = count))+
+      geom_bar(aes(fill = seurat_clusters), stat = "identity") +
+      geom_text(aes(label=count), vjust=0) +
+      ggtitle("Cluster sizes")
+    print(p)
+    pt.size = 0.2
+    print(DimPlot(object = so_integrated, reduction = "umap", group.by = "seurat_clusters",
+                  pt.size = pt.size,
+                  label = TRUE))
+    print(DimPlot(object = so_integrated, reduction = "umap", group.by = "batch",
+                  pt.size = pt.size))
+    print(DimPlot(object = so_integrated, reduction = "umap", group.by = "tissue",
+                  pt.size = pt.size))
+    print(DimPlot(object = so_integrated, reduction = "umap", group.by = "treatment", 
+                  pt.size = pt.size))
+    print(DimPlot(object = so_integrated, reduction = "umap", group.by = "GFP_positive", 
+                  cols = c("lightgrey", "green"), pt.size = pt.size))
+    p <- so_integrated@meta.data %>%
+      group_by(orig.ident) %>% summarize(count = n()) %>%
+      ggplot(aes(x=orig.ident, y = count))+
+      geom_bar(aes(fill = orig.ident), stat = "identity") +
+      geom_text(aes(label=count), vjust=0) +
+      ggtitle("Sample sizes") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    print(p)
+    dev.off()
+    
+    DefaultAssay(object = so_integrated) <- "integrated"
+    # contamination markers
+    pdf(file = paste0(dir_out, sample_name, "/PLOTS/UMAP_contamination.pdf"), width = 12)
+    for (g in cont_markers) {
+      print(g)
+      if (! (g %in% rownames(so_integrated))) {
+        cat(g, ": not in data...\n"); next
+      }
+      print(VlnPlot(object = so_integrated, features = g, pt.size = pt.size))
+      print(FeaturePlot(object = so_integrated, features = g,
+                        min.cutoff = "q5", reduction = "umap", pt.size = pt.size))
+    }
+    dev.off()
+    
+    # genes of interest
+    pdf(file = paste0(dir_out, sample_name, "/PLOTS/UMAP_genes_of_interest.pdf"), width = 12)
+    for (g in genes_of_interest) {
+      print(g)
+      if (! (g %in% rownames(so_integrated))) {
+        cat(g, ": not in data...\n"); next
+      }
+      print(VlnPlot(object = so_integrated, features = g, pt.size = pt.size))
+      print(FeaturePlot(object = so_integrated, features = g,
+                        min.cutoff = "q5", reduction = "umap", pt.size = pt.size))
+    }
+    dev.off()
+    
+    ## Identify markers for each cluster
+    so_markers <- FindAllMarkers(object = so_integrated, 
+                                 only.pos = TRUE, min.pct = 0.25, max.cells.per.ident = 500,
+                                 logfc.threshold = 0.25)
+    saveRDS(so_markers, paste0(dir_out, sample_name, "/FILES/so_markers.rds"))
+  }
+}
+```
+

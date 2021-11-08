@@ -37,3 +37,15 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+
+#### My files
+data/
+output/
+lib/
+*.rds
+*.html
+*.pdf
+*.jpeg
+*.csv
+*.txt
+Th17_single_cell.Rproj

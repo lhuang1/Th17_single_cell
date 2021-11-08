@@ -1,0 +1,67 @@
+---
+title: "Cell and Gene QC for Expression Data"
+output: html_notebook
+---
+
+UMI count matrices were computed by CellRanger. This notebook filter cells and genes by the following criteria and saves data as one big Seurat object of all samples.
+1. cell QC: filter out cells that
+ (1) have non-zero expression in <500 genes
+ (2) have >5% mitochondrial genes
+ (3) have non-zero expression in <60% of the house keeping genes
+2. gene QC: filter out genes that are not detected in any cell
+3. merge GFP:
+ (1) add in GFP counts
+ (2) mark cell status according to GFP +/-
+
+
+```{r}
+rm(list = ls())
+dir_proj <- "/singerlab/linglin/Th17_single_cell/"
+dir_lib <- "~/R/x86_64-pc-linux-gnu-library/lib_th17/" ## v3.2.2
+dir_data <- paste0(dir_proj, "data/single_cell/GEX/")
+dir_out <- paste0(dir_proj, "output/results/preprocessing/QC/")
+if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+
+suppressPackageStartupMessages({
+  library(Seurat, lib.loc = dir_lib)
+})
+source(paste0(dir_proj, "code/util.R"))
+source(paste0(dir_proj, "code/preprocess/util_preprocessing.R"))
+```
+
+```{r}
+hk_genes <- human_to_mouse(read.table(paste0(dir_proj, "data/gene_lists/HK_Satija.txt"), 
+                                      stringsAsFactors = F)[,1]) # house keeping genes
+tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL", "CNS", "DLN")
+treatment_vec <- c("UT", "EAE")
+batch_vec <- paste0("batch", 1:9)
+mouse_vec <- c("m1", "m2")
+
+so_list <- list()
+for (batch in batch_vec) {
+  for (treatment in treatment_vec) {
+    if (batch %in% paste0("batch", 1:5)) { ## non-hashing batches
+      mouse <- NULL
+      for (tissue in tissue_vec) {
+        project_name <- paste(tissue, treatment, batch, sep = "_")
+        cat("Processing", project_name, "...\n")
+        so_by_tissue <- prep_data(tissue, treatment, batch, mouse, project_name, dir_data)
+        so_list <- c(so_list, so_by_tissue)
+      }
+    } else if (batch %in% paste0("batch", 6:9)) {
+      tissue <- "hashed"
+      for (mouse in mouse_vec) { 
+        project_name <- paste(treatment, batch, mouse, sep = "_")
+        cat("Processing", project_name, "...\n")
+        so_by_tissue <- prep_data(tissue, treatment, batch, mouse, project_name, dir_data)
+        so_list <- c(so_list, so_by_tissue)
+      }
+    }
+    
+  }
+}
+so_list[sapply(so_list, is.null)] <- NULL
+saveRDS(so_list, file = paste0(dir_out, "so_list.rds"))
+```
+
+
