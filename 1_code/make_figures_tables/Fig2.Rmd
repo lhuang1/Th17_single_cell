@@ -1,0 +1,442 @@
+---
+title: "Figure 2: Intra-tissue heterogeneity"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(Seurat)
+library(ggplot2)
+library(grid)
+library(RColorBrewer)
+library(gridExtra)
+library(ggpubr)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(openxlsx)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date() #"2020-12-04"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_2/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+
+## Figure 2A, B, C: Intra-tissue cluster annotation (UT GFP all)
+## Figure 2A: UMAPs of EAE tissue clusters
+```{r}
+clustering_date <- "2020-03-25"
+dir_clustering <- paste0(dir_proj, "2_pipeline/clustering/UT_GFPall_intra/", clustering_date, "/")
+
+tissue_vec <- c("SPL", "MLN", "PP", "SI", "COL")
+### load clustering data
+meta <- list()
+reductions <- list()
+for (tissue in tissue_vec) {
+  if (tissue == "SPL") {
+    meta[[tissue]]  <- read.table(paste0(dir_clustering, "FILES/", tissue, "/meta_data_switched.txt"), header = T, sep = " ")
+  } else {
+    meta[[tissue]]  <- read.table(paste0(dir_clustering, "FILES/", tissue, "/meta_data.csv"), header = T, row.names = 1, sep = ",")
+  }
+  meta[[tissue]] <- meta[[tissue]][,-grep("integrated_snn_res", colnames(meta[[tissue]]))]
+  meta[[tissue]]$tissue_cluster <- paste(meta[[tissue]]$tissue, meta[[tissue]]$seurat_clusters, sep = "_")
+  reductions[[tissue]] <- readRDS(paste0(dir_clustering, "FILES/", tissue, "/reductions.rds"))
+}
+all_meta <- Reduce(rbind, meta)
+tissue_cluster_vec <- unique(all_meta$tissue_cluster)
+
+## load annotation
+cluster_ann_types <- c("Proliferating", "Treg-like", "Effector-like", "Tfh-like", "ISG-high", "Slamf6+", "Cxcr6+", "Other")
+cluster_ann <- read.xlsx(paste0(dir_clustering, "cluster_annotation.xlsx"), sheet = "processed")
+cluster_ann <- cluster_ann[!duplicated(cluster_ann),]
+cluster_ann$Annotation[is.na(cluster_ann$Annotation)] <- "Other"
+stopifnot(length(setdiff(cluster_ann$Cluster, tissue_cluster_vec)) == 0) ## check if there are wierd cluster in annotation file
+if (length(setdiff(tissue_cluster_vec, cluster_ann$Cluster)) > 0) {
+  other_clusters <- data.frame(
+    Cluster = setdiff(tissue_cluster_vec, cluster_ann$Cluster),
+    Annotation = "Other")
+  cluster_ann <- rbind(cluster_ann, other_clusters)
+}
+## switch SPL_0 and SPL_1 because we renamed them; change Cluster rather than Annotation such that other cluster orders are maintained.
+new_cluster_vec <- cluster_ann$Cluster
+new_cluster_vec[cluster_ann$Cluster == "SPL_0"] <- "SPL_1"
+new_cluster_vec[cluster_ann$Cluster == "SPL_1"] <- "SPL_0"
+cluster_ann$Cluster <- new_cluster_vec
+## set levels
+cluster_ann$Annotation <- factor(cluster_ann$Annotation, levels = cluster_ann_types)
+cluster_ann <- cluster_ann[order(cluster_ann$Annotation),]
+
+## cluster colors
+max_n_cluster <- sapply(strsplit(tissue_cluster_vec, split = "_"), function(x){x[2]}) %>% as.numeric() %>% max() + 1
+color_cluster <- brewer.pal(max_n_cluster, "Set1")
+names(color_cluster) <- 0:(max_n_cluster - 1)
+## cell type colors
+color_ann <- brewer.pal(nlevels(cluster_ann$Annotation), "Dark2")
+color_ann[nlevels(cluster_ann$Annotation)] <- "grey50"
+names(color_ann) <- levels(cluster_ann$Annotation)
+
+p_cluster <- list()
+p_gfp <- list()
+p_ann <- list()
+for (tissue in tissue_vec) {
+  cat(tissue, "\n")
+  plt_df <- data.frame(
+    cluster = factor(meta[[tissue]]$seurat_clusters),
+    ex_curr = factor(ifelse(meta[[tissue]]$GFP_positive, "Current Th17", "Ex Th17")),
+    cluster_ann = factor(cluster_ann$Annotation[match(meta[[tissue]]$tissue_cluster, cluster_ann$Cluster)], levels = levels(cluster_ann$Annotation)),
+    UMAP_1 = reductions[[tissue]]$umap@cell.embeddings[,"UMAP_1"],
+    UMAP_2 = reductions[[tissue]]$umap@cell.embeddings[,"UMAP_2"]
+  )
+  p_cluster[[tissue]] <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = cluster)) + 
+    geom_point(size = 0.1) +
+    scale_color_manual(values = color_cluster) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    labs(x = "", y = "", color = "Cluster", title = tissue) +
+    theme_classic() +
+    theme(plot.title = element_text(colour = tissue_colors(tissue), hjust = 0, face = "bold", size = 20),
+          legend.position = "none",
+          axis.ticks = element_blank(), axis.text = element_blank())
+  p_ann[[tissue]] <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = cluster_ann)) + 
+    geom_point(size = 0.1) +
+    scale_color_manual(values = color_ann) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    labs(x = "", y = "", color = "Annotation") +
+    theme_classic() +
+    theme(legend.position = "none",
+          axis.ticks = element_blank(), axis.text = element_blank())
+  
+  p_gfp[[tissue]] <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = ex_curr)) + 
+    geom_point(size = 0.1) +
+    scale_color_manual(values = gfp_colors()) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    labs(x = "", y = "", color = "Status") +
+    theme_classic() +
+    theme(legend.position = "none",
+          axis.ticks = element_blank(), axis.text = element_blank())
+}
+
+## create legends
+color_cluster_pad <- color_cluster
+names(color_cluster_pad) <- paste0(names(color_cluster), "                  ")
+tmp <- data.frame(x = paste0(factor(0:(max_n_cluster-1)), "                  "), y = 1) %>% 
+  ggplot(aes(x, y, color = x)) + 
+  scale_color_manual(values = color_cluster_pad) + 
+  geom_point() + labs(colour = "Cluster") + 
+  theme(legend.text = element_text(size = 15),
+        legend.title = element_text(size = 20)) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+p_cluster$legend <- as_ggplot(get_legend(tmp)) 
+
+tmp <- data.frame(x = c("Current Th17", "Ex Th17"), y = 1) %>% 
+  ggplot(aes(x, y, color = x)) + 
+  scale_color_manual(values = gfp_colors()) + 
+  geom_point() + theme_bw() + labs(colour = "Status")+ 
+  theme(legend.text = element_text(size = 15),
+        legend.title = element_text(size = 20)) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+p_gfp$legend <- as_ggplot(get_legend(tmp))
+
+tmp <- data.frame(x = cluster_ann$Annotation, y = 1) %>% 
+  ggplot(aes(x, y, color = x)) + 
+  scale_color_manual(values = color_ann) + 
+  geom_point() + theme_bw() + labs(colour = "Annotation") + 
+  theme(legend.text = element_text(size = 15),
+        legend.title = element_text(size = 20)) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+p_ann$legend <- as_ggplot(get_legend(tmp)) 
+
+pdf(file = paste0(dir_out, "Fig2_A_UMAP_UT_tissue_clusters_", today, ".pdf"), width = 20, height = 12)
+grid.arrange(grobs = c(p_cluster, p_ann, p_gfp), nrow = 3, ncol = 6, 
+             left = textGrob(label = "UMAP_2", rot = 90, gp = gpar(fontsize = 20)), 
+             bottom = textGrob(label = "UMAP_1", rot = 0, gp = gpar(fontsize = 20)))
+dev.off()
+
+
+```
+
+
+
+## Figure 2B: Cluster correlation and annotation plot
+```{r}
+library(corrplot)
+analysis_date <- "2020-05-11"
+results <- readRDS(paste0(dir_clustering, "cluster_similarity_", analysis_date, ".rds"))
+## swich SPL_0 and SPL_1 labels
+new_rownames <- rownames(results$cosine_sim)
+new_rownames[rownames(results$cosine_sim) == "SPL_0"] <- "SPL_1"
+new_rownames[rownames(results$cosine_sim) == "SPL_1"] <- "SPL_0"
+rownames(results$cosine_sim) <- new_rownames
+colnames(results$cosine_sim) <- new_rownames
+## prep data
+hc_order = results$hierarchical_clustering$order
+sim_mat_transformed <- results$cosine_sim[hc_order, hc_order]
+diag(sim_mat_transformed) <- NA
+tl.col <- color_ann[cluster_ann$Annotation[match(rownames(sim_mat_transformed), cluster_ann$Cluster)]]
+
+pdf(paste0(dir_out, "Fig2_B_corrplot_UT_tissue_cluster_similarity_", today, ".pdf"), width = 6, height = 6)
+corrplot(sim_mat_transformed, type="upper", order="original", method = "circle",
+         col=rev(brewer.pal(n=8, name="RdYlBu")),
+         mar = c(5, 4, 4, 2) + 0.1,
+         tl.col = tl.col, tl.pos = 'td', tl.cex = 0.6,
+         diag = T, na.label = " ",
+         title = "Cluster Label Color by Annotation")
+dev.off()
+
+
+```
+
+
+
+## Figure 2C: Dotplot for cluster marker genes
+```{r}
+#####@@@@@@need to simplify
+glist_df <- read.xlsx(paste0(dir_clustering, "cluster_annotation.xlsx"), sheet = "genes_processed")
+glist_df <- glist_df[glist_df$Annotation %in% unique(cluster_ann$Annotation),] ## only show types that do exist
+glist_df$Annotation <- factor(glist_df$Annotation, levels = cluster_ann_types)
+glist_df <- glist_df[order(glist_df$Annotation),]
+glist <- glist_df$Gene
+glist_order <- seq_along(glist)
+## process data to allow duplicated genes
+expr_df <- results$dotplot_df[!duplicated(results$dotplot_df),] %>% 
+  select(expr, tissue_cluster, gene) %>% 
+  spread(key = gene, value = expr) %>%
+  column_to_rownames(var = "tissue_cluster")
+expr_df <- expr_df[,glist]
+colnames(expr_df) <- glist_order
+expr_df <- expr_df %>% rownames_to_column(var = "tissue_cluster") %>% gather(key = "gene_order", value = "expr", -tissue_cluster)
+pct_df <- results$dotplot_df[!duplicated(results$dotplot_df),] %>% 
+  select(pct, tissue_cluster, gene) %>% 
+  spread(key = gene, value = pct) %>% 
+  column_to_rownames(var = "tissue_cluster")
+pct_df <- pct_df[,glist]
+colnames(pct_df) <- glist_order
+pct_df <- pct_df %>% rownames_to_column(var = "tissue_cluster") %>% gather(key = "gene_order", value = "pct", -tissue_cluster)
+stopifnot(all(pct_df$tissue_cluster == expr_df$tissue_cluster))
+stopifnot(all(pct_df$gene_order == expr_df$gene_order))
+dotplot_df <- cbind(expr_df, pct = pct_df$pct) %>%
+  filter(tissue_cluster %in% cluster_ann$Cluster[cluster_ann$Annotation != "Other"]) %>% 
+  mutate(gene = glist[as.numeric(gene_order)], 
+         gene_order = factor(gene_order, levels = sort(unique(as.numeric(gene_order)))),
+         tissue_cluster = factor(tissue_cluster, levels = rev(cluster_ann$Cluster)))
+color_glist <- color_ann[glist_df$Annotation]
+names(color_glist) <- glist_df$Gene
+
+color_dp_cluster <- color_ann[cluster_ann$Annotation[match(levels(dotplot_df$tissue_cluster), cluster_ann$Cluster)]]
+color_dp_cluster <- color_dp_cluster[names(color_dp_cluster) != "Other"]
+
+p <- ggplot(dotplot_df) +
+  geom_point(aes(x = gene_order, y = tissue_cluster, size = pct, color = expr)) +
+  labs(x = "", y = "") +
+  scale_colour_gradient(low = "gray90", high = "black") +
+  scale_size(range = c(0, 4), trans = scales::trans_new("square", function(x) x^2, "sqrt")) +
+  scale_x_discrete(labels = glist[glist_order]) +
+  # coord_equal() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = color_glist), 
+        axis.text.y = element_text(color = color_dp_cluster),
+        legend.title = element_text(size = 8),
+        legend.box = "horizontal", legend.position="bottom", legend.key.size = unit(.13, "in")) +
+  guides(color = guide_colorbar(title = "Scaled Average\nExpression", title.vjust = .8),
+         size = guide_legend(title = "Percent Cell\nDetected", title.vjust = .5, ))
+p
+pdf(paste0(dir_out, "Fig2_C_doplot_UT_tissue_cluster_markers_", today, ".pdf"), width = 5.5, height = 4.5)
+print(p)
+dev.off()
+```
+
+
+
+## Figure 2E, F: clonal similarity between clusters within tissue
+```{r}
+tissue_vec <- c("SPL", "MLN", "PP", "SI", "COL")
+## meta data
+all_meta$batch <- as.character(all_meta$batch)
+all_meta$batch[all_meta$treatment == "UT" & all_meta$batch == "b8"] <- "b9"
+all_meta$batch[all_meta$treatment == "UT" & all_meta$batch == "b7"] <- "b8"
+all_meta$batch <- factor(all_meta$batch)
+
+
+## clonotypes
+clonotyping_type_date <- "dominant_2020-04-02"
+clty_all <- read.csv(paste0(dir_proj, "2_pipeline/TCR/clonotype_assignment_", clonotyping_type_date, ".csv"), row.names = 1)
+
+## merge clonotype info to meta data
+all_meta$clonotype_id <- clty_all[rownames(all_meta),"clonotype_id"]
+all_meta$pooled_clonotype_id <- paste(all_meta$treatment, all_meta$batch, all_meta$mouse, all_meta$clonotype_id, sep = "_")
+all_meta$tissue_cluster <- paste(all_meta$tissue, all_meta$seurat_clusters, sep = "_")
+all_meta$sample <- paste(all_meta$batch, all_meta$mouse, sep = "_") %>% factor()
+meta_noNA <- all_meta[!is.na(all_meta$clonotype_id),] %>% droplevels()
+cluster_colors <- color_ann[cluster_ann$Annotation]
+names(cluster_colors) <- cluster_ann$Cluster
+
+stopifnot(all(meta_noNA$treatment == "UT")) ## check if treatment is correct (should be UT cells only)
+
+
+
+#### clustering ####
+## compute similarity
+tissue <- "COL"
+
+cl_mtx <- table(as.character(meta_noNA$pooled_clonotype_id[meta_noNA$tissue == tissue]), 
+                meta_noNA$tissue_cluster[meta_noNA$tissue == tissue]) %>% as.matrix()
+if (tissue == "COL"){
+  COL_5_6 <- rowSums(cl_mtx[,c("COL_5", "COL_6")])
+  cl_mtx <- cbind(cl_mtx, "COL_5&6" = COL_5_6)
+  cl_mtx <- cl_mtx[, -which(colnames(cl_mtx) %in% c("COL_5", "COL_6"))]
+  if (! "COL_5&6" %in% names(cluster_colors)) {
+    cluster_colors <- c(cluster_colors, "COL_5&6" = as.character(cluster_colors["COL_5"]))
+  }
+}
+cl_mtx <- apply(cl_mtx, 2, function(x){x/sum(x)})
+bh_dist <- philentropy::distance(t(cl_mtx), method = "bhattacharyya") %>% as.matrix()
+rownames(bh_dist) <- colnames(cl_mtx)
+colnames(bh_dist) <- colnames(cl_mtx)
+bh_sim <- exp(-bh_dist)
+
+bh_sim_plt <- bh_sim
+diag(bh_sim_plt) <- NA
+
+pdf(paste0(dir_out, "Fig2_E_TRSS_", today, ".pdf"), width = 5.5, height = 5)
+corrplot(bh_sim_plt, 
+         is.corr = F,
+         type="upper", order="original", method = "circle",
+         # col=rev(brewer.pal(n=8, name="RdYlBu")),
+         col = rev(col_corr_no_white(200)),
+         outline = T,
+         tl.col = cluster_colors[rownames(bh_sim_plt)],
+         tl.pos = 'td',
+         tl.cex = 1,
+         mar = c(1,1,1,1),
+         diag = T, na.label = " ",
+         title = "")
+dev.off()
+
+## F heatmap
+min_size <- 1
+tmp <- meta_noNA[meta_noNA$tissue == tissue,]
+tmp$clonotype_id <- tmp$pooled_clonotype_id
+cl_to_plot <- tmp %>% group_by(clonotype_id) %>% tally() %>% arrange(-n) %>% filter(n >= min_size)
+plt_mtx <- table(tmp$clonotype_id, tmp$tissue_cluster) %>% as.matrix()
+plt_mtx <- plt_mtx[cl_to_plot$clonotype_id,]
+COL_5_6 <- rowSums(plt_mtx[,c("COL_5", "COL_6")])
+plt_mtx <- cbind(plt_mtx, "COL_5&6" = COL_5_6)
+plt_mtx <- plt_mtx[, -which(colnames(plt_mtx) %in% c("COL_5", "COL_6"))]
+plt_mtx <- plt_mtx[rowSums(plt_mtx > 0) > 1,]
+plt_mtx <- plt_mtx[order(rowSums(plt_mtx), decreasing = T),]
+plt_mtx_scale <- 100 * apply(plt_mtx, 1, function(x){x/sum(x)}) %>% t
+n_mouse <- rowSums(plt_mtx>0)
+n_cell <- rowSums(plt_mtx)
+plt_mtx_scale <- plt_mtx_scale[order(n_mouse, n_cell, decreasing = T),]
+p <- pheatmap(plt_mtx_scale, 
+              cluster_rows = F, 
+              cluster_cols = F, 
+              clustering_method = "complete",
+              show_rownames = F, 
+              color = rev(col_corr_pos(100)),
+              fontsize = 12,
+              main = "", silent = T)
+
+p$gtable$grobs[[3]]$gp$col = cluster_colors[colnames(plt_mtx)]
+p$gtable$grobs[[3]]$rot = 45
+p$gtable$grobs[[3]]$hjust = 1
+p$gtable$grobs[[3]]$vjust = 1
+
+pdf(paste0(dir_out, "Fig2_F_heatmap_clonotypes_", today, ".pdf"), width = 4, height = 7)
+grid.arrange(p$gtable)
+dev.off()
+```
+
+
+
+## Figure 2G: Treg vs. non-Treg sharing with SPL
+```{r}
+analysis_date <- "2020-11-05"
+df_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/Tregs/", analysis_date, "/treg_share_with_SPL_", analysis_date, ".rds"))
+
+spl_clonotypes <- unique(meta_noNA$pooled_clonotype_id[meta_noNA$tissue == "SPL"])
+meta_noNA$shared_w_spl <- meta_noNA$pooled_clonotype_id %in% spl_clonotypes
+meta_noNA$batch_mouse <- paste(meta_noNA$batch, meta_noNA$mouse, sep = "_")
+
+treg_cluster <- c(
+  "MLN" = 3,
+  "PP" = 3,
+  "SI" = 2,
+  "COL" = 2
+)
+
+library(lme4)
+p_glmm <- rep(NA, length(treg_cluster))
+names(p_glmm) <- names(treg_cluster)
+for (tissue in names(treg_cluster)) {
+  meta_noNA_sub <- meta_noNA[(meta_noNA$tissue == tissue) & (meta_noNA$treatment == "UT"),]
+  meta_noNA_sub$is_treg <- meta_noNA_sub$seurat_clusters == treg_cluster[tissue]
+  fit <- glmer(shared_w_spl ~ is_treg + (1|batch_mouse), data = meta_noNA_sub, family = binomial())
+  print(tissue)
+  print(summary(fit)$coefficients)
+  p_glmm[tissue] <- summary(fit)$coefficients["is_tregTRUE", "Pr(>|z|)"]
+}
+
+
+col_mouse <- brewer.pal(4, "Set1"); names(col_mouse) <- as.character(1:4)
+plist <- list()
+for (tissue in names(treg_cluster)) {
+  df <- df_ls[[tissue]] %>% 
+      mutate(batch_mouse = factor(paste(batch, mouse, sep = "_"))) %>% 
+      select(batch_mouse, Treg_frac, nTreg_frac, p_fisher) %>% 
+      gather(key = "is_treg", value = "frac", -batch_mouse, -p_fisher) %>% 
+      mutate(is_treg = factor(ifelse(is_treg == "Treg_frac", "Treg", "Non-Treg"), levels = c("Treg", "Non-Treg"))) %>% 
+      mutate(Mouse = factor(ifelse(batch_mouse == "pooled", "pooled", as.numeric(batch_mouse)))) %>% 
+      filter(!is.na(frac))
+  map_signif_level_func <- function(x) {
+    ifelse(x < 0.001, "***", ifelse(x < 0.01, "**", ifelse(x < 0.05, "*", "N.S.")))
+  }
+  
+  library(ggsignif)
+  plist[[tissue]] <- ggplot(df, aes(x = is_treg, y = frac * 100, group = Mouse, color = Mouse)) +
+      geom_line(size = 1) + geom_point(size = 4) +
+      # geom_signif(comparisons = list(c("Treg", "Non-Treg")), 
+                                       # map_signif_level = map_signif_level_func, test = "wilcoxon.exact.test_paired",
+                                       # y_position = ceiling(max(df$frac) * 10) * 10 + 5,
+                                       # na.rm = T, textsize = 5, vjust = -0.5, color = "black") +
+    geom_signif(xmin = "Treg", xmax = "Non-Treg", annotations = map_signif_level_func(p_glmm[tissue]),
+                y_position = ceiling(max(df$frac) * 10) * 10 + 5,
+                na.rm = T, textsize = 5, vjust = -0.5, color = "black") +
+      scale_color_manual(values = col_mouse) +
+      ylim(0, ceiling(max(df$frac) * 10) * 10 + 10) +
+      labs(x = "", y = "") +
+      theme_bw() +
+      theme(panel.border = element_blank(),
+            axis.line = element_line(),
+            axis.text.x = element_text(size = 15, color = "black"),
+            axis.text.y = element_text(size = 12, color = "black"),
+            plot.title = element_text(face = "bold", hjust = 0, color = tissue_colors(tissue)),
+            legend.position = "none")
+}
+
+p_tmp <- ggplot(df, aes(x = is_treg, y = frac * 100, group = Mouse, color = Mouse)) +
+    geom_line(size = 1) + geom_point(size = 4) + scale_color_manual(values = col_mouse)
+p_legend <- get_legend(p_tmp)
+
+
+pdf(paste0(dir_out, "Fig2_G_paired_scatter_percent_cell_share_with_SPL_", today, ".pdf"), height = 4, width = 4 )
+grid.arrange(plist$COL, nrow = 1,
+             left = textGrob(label = "% Shared with SPL", gp = gpar(fontsize = 15), rot = 90),
+             right = p_legend)
+dev.off()
+
+dir_out_S <- paste0(dir_proj, "3_output/Figure_Supp/")
+pdf(paste0(dir_out_S, "FigS6_C_paired_scatter_percent_cell_share_with_SPL_", today, ".pdf"),  height = 4, width = 4 * 3)
+grid.arrange(grobs = plist[setdiff(names(plist), "COL")], nrow = 1,
+             left = textGrob(label = "% Shared with SPL", gp = gpar(fontsize = 15), rot = 90),
+             right = p_legend)
+dev.off()
+```
+

@@ -1,0 +1,321 @@
+---
+title: "Figure 6: Migration between two populations"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(ggpubr)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(openxlsx)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date()#"2020-12-18"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_6/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+Load data.
+```{r}
+# so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", 
+                          clustering_date, "/FILES/meta_data_switched.txt"), 
+                   header = T, sep = " ")
+reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES/reductions.rds"))
+stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
+
+so <- so_all[,rownames(meta)] ## restrict to SPL EAE cells
+so@meta.data <- meta
+so@reductions <- reductions
+```
+
+
+## Figure 6A: UMAP of SPL cells sharing TCR with CNS
+```{r}
+#### load data
+clustering_date <- "2020-03-25"
+clonotyping_type_date <- "dominant_2020-04-02"
+treatment <- "EAE"
+tissue_vec <- c("SPL", "CNS")
+dir_cluster <- paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_intra/", clustering_date, "/")
+dir_spl_cluster <- paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/")
+
+
+## meta data
+meta <- list()
+for (tissue in tissue_vec) {
+  if (tissue == "SPL" & treatment == "EAE") {
+    tmp  <- read.table(paste0(dir_spl_cluster, "FILES/meta_data_switched.txt"), header = T, sep = " ")
+    meta[[tissue]] <- tmp[,-grep("integrated_snn_res", colnames(tmp))]
+  } else {
+    tmp  <- read.table(paste0(dir_cluster, "FILES/", tissue, "/meta_data.csv"), header = T, row.names = 1, sep = ",")
+    meta[[tissue]] <- tmp[,-grep("integrated_snn_res", colnames(tmp))]
+  }
+}
+meta_all <- Reduce(rbind, meta)
+
+## clonotypes
+clty_all <- read.csv(paste0(dir_proj, "2_pipeline/TCR/clonotype_assignment_", clonotyping_type_date, ".csv"), row.names = 1)
+
+## merge clonotype info to meta data
+meta_all$clonotype_id <- clty_all[rownames(meta_all),"clonotype_id"]
+meta_all$pooled_clonotype_id <- paste(meta_all$treatment, meta_all$batch, meta_all$mouse, meta_all$clonotype_id, sep = "_")
+meta_all$sample <- paste(meta_all$batch, meta_all$mouse, sep = "_") %>% factor()
+meta_all$tissue_cluster <- factor(paste(meta_all$tissue, meta_all$seurat_clusters, sep = "_"))
+
+meta_noNA <- meta_all[!is.na(meta_all$clonotype_id),] %>% droplevels()
+stopifnot(all(meta_noNA$treatment == treatment)) ## check if treatment is correct (should be EAE cells only)
+
+##### compare clonotypes
+cl_spl <- unique(meta_noNA$pooled_clonotype_id[meta_noNA$tissue == "SPL"])
+cl_cns <- unique(meta_noNA$pooled_clonotype_id[meta_noNA$tissue == "CNS"])
+
+so$pooled_clonotype_id <- meta_all[colnames(so), "pooled_clonotype_id"]
+
+plt_df <- data.frame(so@reductions$umap@cell.embeddings)
+plt_df$shared <- so$pooled_clonotype_id %in% cl_cns
+plt_df$shared[(!(so$seurat_clusters %in% c(0, 1))) | is.na(so$raw_clonotype_id)] <- NA
+plt_df$shared <- factor(plt_df$shared, levels = c("TRUE", "FALSE"))
+
+
+col_share <- ggplot_default_color_descrete(2) %>% rev %>% `names<-`(., c("TRUE", "FALSE"))
+# col_share <- c("TRUE" = "red", "FALSE" = "black")
+
+p <- ggplot(plt_df) +
+  geom_point(aes(UMAP_1, UMAP_2, color = shared), size = 0.5) +
+  scale_color_manual(values = col_share, na.value = "grey70", labels = c("Shared", "Not Shared")) +
+  labs(color = "", title = "") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme_classic() +
+  theme(plot.title = element_text(face = "bold", hjust = 0, colour = "black"),
+        axis.text = element_blank(), 
+        axis.ticks = element_blank()) 
+
+pdf(paste0(dir_out, "Fig6_A_umap_share_with_cns_", today, ".pdf"), width = 4, height = 4)
+p + theme(legend.position = "none")
+grid.arrange(get_legend(p))
+dev.off()
+
+
+```
+
+
+
+
+
+## Figure 6B: Dot plot of clonal similairties between SPL_0/2 and other tissues
+```{r}
+## similarity scores
+analysis_date <- "2020-11-02"
+sim_scores <- readRDS(paste0(dir_proj, "2_pipeline/TCR/EAE_SPL0_SPL1_vs_tissue_clusters/similarity_score_SPL01_vs_tissue_", analysis_date, ".rds"))
+plt_df <- sim_scores %>% data.frame() %>% 
+  rownames_to_column(var = "tissue") %>% 
+  gather(key = "cluster", value = "score", -tissue) %>% 
+  filter(tissue != "SPL") %>% 
+  mutate(tissue = factor(tissue, levels = c("CNS", "DLN", "MLN", "PP", "SI", "COL")),
+         cluster = factor(cluster, levels = c("SPL_1", "SPL_0")))
+
+max(plt_df$score)
+
+p <- ggplot(plt_df) +
+  geom_point(aes(x = tissue, y = cluster, size = score, fill = score), shape = 21, color = "black") +
+  scale_size_continuous(name = "Similarity", range = c(0, 8), 
+                        breaks = seq(0.1, 0.5, 0.1),
+                        labels = c("<=0.1", "0.2", "0.3", "0.4", ">=0.5")) +
+  scale_fill_gradientn(name = "Similarity", 
+                       colours = rev(c("#67001F", "#B2182B", "#D6604D", "#F4A582", "#FDDBC7", "#FFFFFF")),
+                       breaks = seq(0.1, 0.5, 0.1), 
+                       labels = c("<=0.1", "0.2", "0.3", "0.4", ">=0.5")) +
+  guides(fill = guide_legend(), size = guide_legend()) +
+  labs(x = "", y = "") +
+  theme_bw() +
+  theme(axis.text.x = element_text(color = tissue_colors(levels(plt_df$tissue)), size = 15),
+        axis.text.y = element_text(color = rev(SPL_EAE_cluster_0_1_colors()), size = 15),
+        legend.position = "bottom")
+p
+# library(corrplot)
+# 
+# corrplot(sim_scores, is.corr = F)
+
+# p <- ggplot(plt_df) +
+#   geom_tile(aes(x = tissue, y = cluster, fill = score),color = "black") +
+#   scale_fill_gradientn(name = "Similarity", 
+#                        colours = rev(c("#67001F", "#B2182B", "#D6604D", "#F4A582", "#FDDBC7", "#FFFFFF")),
+#                     breaks = seq(0.1, 0.7, 0.1)) +
+#   # guides(fill = guide_legend()) +
+#   labs(x = "", y = "") +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(color = tissue_colors(levels(plt_df$tissue)), size = 15),
+#         axis.text.y = element_text(color = rev(SPL_EAE_cluster_0_1_colors()), size = 15),
+#         legend.position = "bottom")
+
+pdf(paste0(dir_out, "Fig6_B_similarity_with_tissue_", today, ".pdf"), width = 5, height = 2.5)
+p
+dev.off()
+```
+
+
+## Figure 6C: Heatmap of migratory genes
+```{r}
+library(pheatmap)
+
+gene_0_vec <- c("Ccr9", "Itga4", "Cxcr5", "Ccr7", "Sell", "Ccr6", "Ccr4", "Itga7")
+gene_1_vec <- c("Itgb1", "Cxcr6", "Ccr2", "Ccr5", "Itgb2", "Ccl5", "Crip1", "Lgals1")
+glist <- c(gene_0_vec, gene_1_vec)
+all(glist %in% rownames(so[["integrated"]])) ## check if these genes names are all found in integrated data
+
+## extract integrated expression and z-normalize across cells
+in_spl_0 <- so$seurat_clusters == 0
+in_spl_1 <- so$seurat_clusters == 1
+expr_mat <- so[["integrated"]]@data[glist, c(which(in_spl_0), which(in_spl_1))]
+expr_mat_z <- t(apply(expr_mat, 1, scale))
+colnames(expr_mat_z) <- colnames(expr_mat)
+
+## heatmap column annotation
+ann_col <- data.frame(
+  Cluster = c(rep("SPL_0", sum(in_spl_0)), rep("SPL_1", sum(in_spl_1))) %>%
+    factor(., levels = c("SPL_0", "SPL_1"))
+)
+rownames(ann_col) <- colnames(expr_mat)
+## annotation colors
+ann_colors <- list(Cluster = SPL_EAE_cluster_0_1_colors())
+## color palette and breaks
+my_palette <- colorRampPalette(colors = c("magenta", "black", "yellow"))(100)
+my_breaks <- seq(-2, 2, length.out = 101)
+
+p <- pheatmap(expr_mat_z,
+         scale = "none",
+         cluster_rows = T,
+         cluster_cols = F,
+         color = my_palette,
+         breaks = my_breaks,
+         cutree_rows = 2,
+         # gaps_col = sum(in_spl_0),
+         annotation_col = ann_col,
+         annotation_colors = ann_colors,
+         show_rownames = T,
+         show_colnames = F,
+         treeheight_row = 20,
+         annotation_legend = F,
+         main = "")
+
+pdf(paste0(dir_out, "Fig6_C_heatmap_genes_", today, ".pdf"), width = 3, height = 4.5)
+grid.arrange(p$gtable)
+dev.off()
+```
+
+
+## Figure 6D: Corrplot of clonal similarities for all clusters at homeostasis and EAE
+```{r}
+library(corrplot)
+analysis_date <- "2020-11-02"
+sim_scores <- readRDS(paste0(dir_proj, "2_pipeline/TCR/EAE_SPL0_SPL1_vs_tissue_clusters/similarity_score_tissue_cluster_UT_", analysis_date, ".rds"))
+cluster_names <- rownames(sim_scores)
+cluster_names[rownames(sim_scores) == "SPL_0"] <- "SPL_1"
+cluster_names[rownames(sim_scores) == "SPL_1"] <- "SPL_0"
+rownames(sim_scores) <- cluster_names
+colnames(sim_scores) <- cluster_names
+
+bh_dist <- -log(sim_scores)
+# bh_dist[is.infinite(bh_dist)] <- 1000 * max(bh_dist[is.finite(bh_dist)])
+bh_dist <- pmin(bh_dist, 10*max(bh_dist[!is.infinite(bh_dist)]))
+hc <- hclust(as.dist(bh_dist), method = "ward.D")
+
+sim_scores <- sim_scores[(hc$order), (hc$order)]
+diag(sim_scores) <- NA
+
+tl_col <- tissue_colors(sub("_.*", "", rownames(sim_scores)))
+sim_scores_cap <- pmin(sim_scores, quantile(sim_scores, 0.95, na.rm = T))
+
+
+pdf(paste0(dir_out, "Fig6_D_UT_similarity_tissue_cluster_", today, ".pdf"), width = 5, height = 5)
+corrplot(sim_scores_cap,
+         is.corr = FALSE, order = "original",
+         col = rev(col_corr_pos(100)),
+         type = "upper", diag = T, na.label = " ",
+         tl.col = tl_col, tl.cex = .65)
+dev.off()
+
+
+
+
+```
+
+```{r}
+analysis_date <- "2020-11-02"
+sim_scores <- readRDS(paste0(dir_proj, "2_pipeline/TCR/EAE_SPL0_SPL1_vs_tissue_clusters/similarity_score_tissue_cluster_EAE_", analysis_date, ".rds"))
+
+# bh_dist <- -log(sim_scores)
+# bh_dist[is.infinite(bh_dist)] <- 100 * max(bh_dist[is.finite(bh_dist)])
+# hc <- hclust(as.dist(bh_dist))
+# sim_scores <- sim_scores[rev(hc$order), rev(hc$order)]
+# tl_col <- tissue_colors(sub("_.*", "", rownames(sim_scores)))
+# 
+# sim_scores_cap <- pmin(sim_scores, quantile(sim_scores, 0.95))
+# 
+# # pdf(paste0(dir_out, "Fig6_D_EAE_similarity_tissue_cluster_", today, ".pdf"), width = 5, height = 5)
+# corrplot(sim_scores_cap,
+#          is.corr = FALSE, order = "original",
+#          col = rev(col_corr(100)),
+#          type = "upper", diag = FALSE,
+#          tl.col = tl_col, tl.cex = .7)
+# # dev.off()
+
+# cluster_names <- rownames(sim_scores)
+# cluster_names[rownames(sim_scores) == "SPL_0"] <- "SPL_1"
+# cluster_names[rownames(sim_scores) == "SPL_1"] <- "SPL_0"
+# rownames(sim_scores) <- cluster_names
+# colnames(sim_scores) <- cluster_names
+
+bh_dist <- -log(sim_scores)
+# bh_dist[is.infinite(bh_dist)] <- 1000 * max(bh_dist[is.finite(bh_dist)])
+bh_dist <- pmin(bh_dist, 10*max(bh_dist[!is.infinite(bh_dist)]))
+hc <- hclust(as.dist(bh_dist), method = "ward.D")
+
+sim_scores <- sim_scores[(hc$order), (hc$order)]
+diag(sim_scores) <- NA
+
+
+## Switch CNS cluster numbers (SPL has been switched in last step)
+cluster_names <- rownames(sim_scores)
+# Quiescent: C1 -> C0
+cluster_names[rownames(sim_scores) == "CNS_0"] <- "CNS_1"
+# Migratory: C0 -> C1
+cluster_names[rownames(sim_scores) == "CNS_1"] <- "CNS_0"
+# Proliferating: C3 -> C2
+cluster_names[rownames(sim_scores) == "CNS_3"] <- "CNS_2"
+# CD8-like: C4 -> C3
+cluster_names[rownames(sim_scores) == "CNS_4"] <- "CNS_3"
+# Proinflammatory: C2 -> C4
+cluster_names[rownames(sim_scores) == "CNS_2"] <- "CNS_4"
+rownames(sim_scores) <- cluster_names
+colnames(sim_scores) <- cluster_names
+
+
+tl_col <- tissue_colors(sub("_.*", "", rownames(sim_scores)))
+sim_scores_cap <- pmin(sim_scores, quantile(sim_scores, 0.95, na.rm = T))
+
+
+pdf(paste0(dir_out, "Fig6_D_EAE_similarity_tissue_cluster_", today, ".pdf"), width = 5, height = 5)
+corrplot(sim_scores_cap,
+         is.corr = FALSE, order = "original",
+         col = rev(col_corr_pos(100)),
+         type = "upper", diag = T, na.label = " ",
+         tl.col = tl_col, tl.cex = .65)
+dev.off()
+```
+
+## Figure 6E: Bar plot from Alex

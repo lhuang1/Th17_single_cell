@@ -1,28 +1,19 @@
----
-title: "Parse and Examine Cell-hashing Demultiplex Results"
-output: html_notebook
----
-
-DemuxEM v0.1.5 was applied to infer the hashtag(s) for each cell in cell-hashing sample using CellRanger output for the ADT library. In this notebook, demuxEM results were loaded and parsed for downstream analyses, and plots were generated to examine the performance of the algorithm.
-
-
-```{r setup}
+#### parse demuxEM output for cell-hashing batches ####
+#### configuration ####
 rm(list = ls())
-dir_proj <- "/singerlab/linglin/Th17_single_cell/"
-dir_lib <- "~/R/x86_64-pc-linux-gnu-library/lib_th17/" ## v3.2.2
-dir_out <- paste0(dir_proj, "output/results/preprocessing/demultiplex/")
+setwd("/singerlab/linglin/Th17_single_cell_eae_ut")
+today <- Sys.Date()
+convert_date <- "2020-01-22"
+dir_out <- paste0("2_pipeline/preprocessing/demultiplex/", today, "/")
 if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 
-suppressPackageStartupMessages({
-  library(Seurat, lib.loc = dir_lib)
-  library(ggplot2)
-})
-source(paste0(dir_proj, "code/preprocess/util_preprocessing.R"))
-```
+
+library(Seurat)
+library(ggplot2)
+source("1_code/utils.R")
+source("1_code/preprocessing/utils.R")
 
 
-Load demuxEM output.
-```{r}
 library(reticulate)
 ad <- import("anndata", convert = FALSE)
 pd <- import("pandas", convert = FALSE)
@@ -64,9 +55,9 @@ for (batch in batch_vec) {
                   aes(x = Var1, y = Freq/2, label = Freq)) +
         labs(x = "", y = "Number of cells", fill = "Assignment") +
         theme_bw()
-
+      
       p2 <- UMAPPlot(hto, group.by = "assignment_tissue") + theme_bw()
-
+      
       p3 <- FeaturePlot(hto, features = rownames(hto), reduction = 'umap', pt.size = 0.2)
       
       pdf(paste0(dir_out, "UMAP_demuxEM_", sample_name, ".pdf"))
@@ -80,6 +71,3 @@ for (batch in batch_vec) {
     }
   }
 }
-```
-
-

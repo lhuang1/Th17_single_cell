@@ -1,0 +1,387 @@
+---
+title: "Figure 1: Tissue-specific Th17 Signatures"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(Seurat)
+library(ggplot2)
+library(grid)
+library(RColorBrewer)
+library(gridExtra)
+library(ggpubr)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(openxlsx)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date()#"2021-01-05"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_1/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+Load data.
+```{r}
+prep_type_date <- "dominant_TCR_2020-03-24"
+so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+date_cluster <- "2020-04-13"
+meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/UT_GFPpos_inter/", 
+                          date_cluster, "/FILES/meta_data.txt"), 
+                   header = T, sep = " ", row.names = 1)
+reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/UT_GFPpos_inter/", date_cluster, "/FILES/reductions.rds"))
+stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
+
+so <- so_all[,rownames(meta)] ## restrict to SPL EAE cells
+so@meta.data <- meta
+so$tissue_cluster <- paste(so$tissue, so$seurat_clusters, sep = "_")
+so@reductions <- reductions
+
+so <- NormalizeData(so, assay = "RNA", scale.factor = 10^6) ## compute log(CPM+1)
+```
+
+
+## Figure 1D: UMAP of UT GFP+ cells; color by tissue
+```{r}
+stopifnot(all(rownames(reductions$umap@cell.embeddings) == rownames(meta)))
+meta$UMAP_1 <- reductions$umap@cell.embeddings[,"UMAP_1"]
+meta$UMAP_2 <- reductions$umap@cell.embeddings[,"UMAP_2"]
+
+## S2A: cluster
+p <- ggplot(meta, aes(x = UMAP_1, y = UMAP_2, color = tissue)) + 
+  geom_point(size = 0.1) +
+  scale_color_manual(values = tissue_colors()) +
+  labs(color = "Tissue") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme_classic() +
+  theme(legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        axis.text = element_text(size = 12))
+p_legend <- get_legend(p)
+pdf(file = paste0(dir_out, "Fig1_D_UMAP_by_tissue_", today, ".pdf"), width = 7, height = 7)
+p + theme(legend.position = "none")
+grid.arrange(p_legend)
+dev.off()
+```
+
+
+## Figure 1E: UMAP of UT GFP+ cells; color by expression of Foxp3 and Mki67
+```{r}
+## Foxp3
+meta$log_cpm <- so[["RNA"]]@data["Foxp3",]
+p1 <- ggplot(meta, aes(x = UMAP_1, y = UMAP_2, color = log_cpm)) + 
+  geom_point(size = 0.1) +
+  scale_color_gradient(low = "grey", high = "blue") +
+  labs(color = "Expression", title = "Foxp3") +
+  theme_classic() +
+  theme(legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(size = 15, face = "italic"),
+        axis.title = element_text(size = 15),
+        axis.text = element_blank(), axis.ticks = element_blank())
+
+## Mki67
+meta$log_cpm <- so[["RNA"]]@data["Mki67",]
+p2 <- ggplot(meta, aes(x = UMAP_1, y = UMAP_2, color = log_cpm)) + 
+  geom_point(size = 0.1) +
+  scale_color_gradient(low = "grey", high = "blue") +
+  labs(color = "Expression", title = "Mki67") +
+  theme_classic() +
+  theme(legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(size = 15, face = "italic"),
+        axis.title = element_text(size = 15),
+        axis.text = element_blank(), axis.ticks = element_blank())
+
+pdf(file = paste0(dir_out, "Fig1_E_UMAP_by_Foxp3_Mki67_", today, ".pdf"), width = 4.5, height = 7)
+grid.arrange(p1, p2, nrow = 2)
+dev.off()
+```
+
+
+
+## Figure 1F: Heatmap of tissue vs. SPL gene modules
+```{r}
+date_de <- "2020-03-03"
+source(paste0(dir_proj, "1_code/make_figures/utils.R"))
+tissue_vec <- c("MLN", "PP", "SI", "COL")
+
+####### plot heatmap ##########
+# load differentially expressed genes
+dir_de <- paste0(dir_proj, "2_pipeline/differential_expression/UT_GFPpos_vs_SPL/", date_de, "/")
+deg_up <- readRDS(paste0(dir_de, "up_all.rds"))
+deg_down <- readRDS(paste0(dir_de, "down_all.rds"))
+
+# reorder tissue in DE gene lists
+deg_up <- deg_up[tissue_vec]
+deg_up[sapply(deg_up, is.null)] <- NULL
+deg_down <- deg_down[tissue_vec]
+deg_down[sapply(deg_down, is.null)] <- NULL
+
+# process gene lists (one list per tissue) into modules (specific to tissue combinations)
+combn_to_remove <- c()
+up_modules <- gene_lists_to_modules(deg_up, collapse_mLN = F)
+down_modules <- gene_lists_to_modules(deg_down, collapse_mLN = F)
+
+all_up_genes <- unlist(up_modules) %>% unique()
+down_modules <- lapply(down_modules, function(x) {
+  lapply(x, function(y) {setdiff(y, all_up_genes)})
+})
+
+# combn_to_remove <- c("mLN_PP_SI", "mLN_PP_colon", "mLN_SI_colon", "mLN_SI", "mLN_colon")
+combn_to_remove_up <- sapply(up_modules, function(x) {names(which(sapply(x, length) < 20))}) %>% unlist
+up_modules <- lapply(up_modules, function(x){
+  x[names(x) %in% combn_to_remove_up] <- NULL
+  x
+})
+
+combn_to_remove_down <- sapply(down_modules, function(x) {names(which(sapply(x, length) < 20))}) %>% unlist
+down_modules <- lapply(down_modules, function(x){
+  x[names(x) %in% combn_to_remove_down] <- NULL
+  x
+})
+
+keep_module_names <- union(unlist(lapply(up_modules, names)), unlist(lapply(down_modules, names)))
+
+# load log fold changes
+lfc <- readRDS(paste0(dir_de, "sample_lfc.rds"))
+# reorder tissues
+samples_ordered <- unlist(lapply(tissue_vec, function(x){which(gsub("_b[0-9]", "", colnames(lfc)) == x)}))
+lfc <- lfc[, samples_ordered]
+log2fc <- log2(exp(lfc)) # convert to log2 fold change
+
+# reorder genes
+genes_orderedrd_up <- lapply(up_modules, function(x){
+  lapply(x, function(y){
+    if (length(y) == 0) {
+      return(NULL)
+    } else if (length(y) == 1) {
+      return(y)
+    } else {
+      y[hclust(dist(log2fc[y,]), method = "single")$order]
+    }
+  })
+})  %>% unlist()
+genes_orderedrd_down <- lapply(down_modules, function(x){
+  lapply(x, function(y){
+    if (length(y) == 0) {
+      return(NULL)
+    } else if (length(y) == 1) {
+      return(y)
+    } else {
+      y[hclust(dist(log2fc[y,]), method = "single")$order]
+    }
+  })
+})  %>% unlist()
+genes_orderedrd_down <- genes_orderedrd_down[!genes_orderedrd_down %in% genes_orderedrd_up]
+genes_orderedrd <- c(genes_orderedrd_up, genes_orderedrd_down)
+
+de_combn_vec <- sub("[0-9]+", "", names(genes_orderedrd))
+de_combn_vec_up <- sub("[0-9]+", "", names(genes_orderedrd_up))
+de_combn_vec_down <- sub("[0-9]+", "", names(genes_orderedrd_down))
+ng_vec <- c(sapply(unique(de_combn_vec_up), function(x){sum(de_combn_vec_up == x)}),
+             sapply(unique(de_combn_vec_down), function(x){sum(de_combn_vec_down == x)})) %>% cumsum
+# ng_combn_vec <- ng_vec[c(1, 5, 11, 15, 16, 20, 25)]
+
+# save genes
+saveRDS(genes_orderedrd, paste0(dir_de, "module_genes_ordered.rds"))
+for (i in unique(de_combn_vec_up)) {
+  write.table(genes_orderedrd_up[de_combn_vec_up == i], file = paste0(dir_de, "module_up_", i, ".txt"),
+              sep = "\n", row.names = F, col.names = F, quote = F)
+}
+for (i in unique(de_combn_vec_down)) {
+  write.table(genes_orderedrd_down[de_combn_vec_down == i], file = paste0(dir_de, "module_down_", i, ".txt"),
+              sep = "\n", row.names = F, col.names = F, quote = F)
+}
+
+# restrict to DE genes; reorder columns
+col_order <- c('MLN_b1', 'MLN_b4', 'MLN_b5', 'PP_b1', 'PP_b4', 'PP_b5',
+               'SI_b1', 'SI_b3', 'SI_b4', 'COL_b1', 'COL_b2', 'COL_b3', 'COL_b4')
+log2fc <- log2fc[genes_orderedrd, col_order]
+
+#### column and row annotations
+ann_col <- data.frame(
+  #batch = factor(gsub(".*\\_", "", colnames(log2fc)), levels = c('b1', 'b2', 'b3', 'b4', 'b5')),
+  tissue = factor(gsub("_b[0-9]", "", colnames(log2fc)), levels = tissue_vec)
+)
+rownames(ann_col) <- colnames(log2fc)
+ann_row <- data.frame(
+  DE_in = factor(de_combn_vec, levels = keep_module_names)
+)
+rownames(ann_row) <- rownames(log2fc)
+
+
+library(RColorBrewer)
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+set.seed(12321)
+ann_colors = list(
+  DE_in = c(sample(col_vector, nlevels(ann_row$DE_in) - nlevels(ann_col$tissue)),
+            tissue_colors(tissue_vec)),
+  #batch = sample(col_vector, 5),
+  tissue = tissue_colors(tissue_vec)
+)
+#names(ann_colors$batch) <- levels(ann_col$batch)
+names(ann_colors$tissue) <- levels(ann_col$tissue)
+names(ann_colors$DE_in) <- levels(ann_row$DE_in)
+
+
+
+lfc_mat_cap <- log2fc
+cap_val_high <- 2.5
+cap_val_low <- -2.5
+lfc_mat_cap[lfc_mat_cap > cap_val_high] <- cap_val_high
+lfc_mat_cap[lfc_mat_cap < cap_val_low] <- cap_val_low
+my_palette <- c(
+  colorRampPalette(c("darkblue", "darkblue"))(1),
+  colorRampPalette(c("darkblue", "white", "red"))(100),
+  colorRampPalette(c("red", "red"))(1))
+tmp <- seq(0, cap_val_high-0.001, length.out = 51)^(0.6)
+
+color_breaks <- c(cap_val_low,
+                  rev(-tmp), tmp[-1],
+                  cap_val_high)
+legend_breaks <- c(seq(cap_val_low, 0, length.out = 3), seq(0, cap_val_high, length.out = 3)) %>% unique()
+legend_labels <- paste0(c("<=", rep("", 3), ">="), legend_breaks)
+
+library(pheatmap)
+p <- pheatmap(
+  lfc_mat_cap,
+  cluster_rows = F,
+  cluster_cols = F,
+  annotation_col = ann_col,
+  # annotation_row = ann_row,
+  # scale = "row",
+  gaps_row = ng_vec,
+  # gaps_row = ng_combn_vec,
+  annotation_colors = ann_colors,
+  # annotation_legend = T,
+  fontsize_col = 6,
+  breaks = color_breaks,
+  color = my_palette,
+  legend_breaks = legend_breaks,
+  legend_labels = legend_labels,
+  show_rownames = F
+)
+pdf(file = paste0(dir_out, "Fig1F_heatmap.pdf"),width = 4)
+grid.arrange(p$gtable)
+dev.off()
+
+pdata <- list(
+  ann_col = ann_col,
+  ann_row = ann_row,
+  ann_colors = ann_colors,
+  ng_vec = ng_vec,
+  color_breaks = color_breaks,
+  my_palette = my_palette
+)
+saveRDS(pdata, file = paste0(dir_out, "Fig1F_heatmap.rds"))
+```
+
+
+
+## Figure 1G: dot plot of enrichmed pathways
+```{r}
+date_gsea <- "2020-03-12"
+res <- readRDS(paste0(dir_proj, "2_pipeline/enrichment/UT_GFPpos_vs_SPL/", date_gsea,
+                      "/GSEA_outputs.rds"))
+date_combine <- "2020-12-24"
+to_plot <- read.xlsx(paste0(dir_proj, "2_pipeline/enrichment/UT_GFPpos_vs_SPL/GSEA_GO_Biological_Process_all_combined_",
+                            date_combine, ".xlsx"), sheet = "for_figure")
+
+to_plot$In.figure <- stringr::str_wrap(to_plot$In.figure, 20)
+to_plot$In.figure <- factor(to_plot$In.figure, levels = rev(to_plot$In.figure))
+
+tissue_vec <- c("MLN", "PP", "SI", "COL")
+names(res$go_bp) <- tissue_vec ##### need to fix in GSEA code
+plt_df <- lapply(tissue_vec, function(tissue) {
+    idx <- match(to_plot$pathway, res$go_bp[[tissue]]$pathway)
+    data.frame(
+      pathway = to_plot$pathway,
+      pathway_name = to_plot$`In.figure`,
+      pvalue = res$go_bp[[tissue]]$pval[idx],
+      fdr = res$go_bp[[tissue]]$padj[idx],
+      NES = res$go_bp[[tissue]]$NES[idx],
+      tissue = tissue
+    )
+  }) %>% Reduce(rbind, .) %>% 
+  mutate(tissue = factor(tissue, levels = tissue_vec)) 
+
+
+p <- plt_df %>% 
+  filter(NES > 0) %>%
+  mutate(NES = ifelse(fdr < 0.05, NES, NA)) %>%
+  ggplot() +
+  geom_point(aes(x = tissue, y = pathway_name, size = -log10(pvalue), fill = NES, color = fdr < 0.05), shape = 21) +
+  labs(x = "", y = "", fill = "NES", size = "-log10(pvalue)", color = "FDR<0.05", title = "") +
+  scale_size(range = c(0, 6), trans = scales::trans_new("square", function(x) x^2, "sqrt")) +
+  # scale_color_gradient2(low = "blue", mid = "white", high = "red", na.value = "grey60") +
+  scale_fill_gradient(low = "white", high = "red", na.value = "grey70") +
+  scale_color_manual(values = c("TRUE" = "black", "FALSE" = "grey70")) +
+  # scale_shape_manual(values = c("TRUE" = 21, "FALSE" = 21)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = (as.character(tissue_colors(tissue_vec)))),
+        # axis.text.y = element_text(hjust = -0.01, vjust = 0.5),
+        legend.title = element_text(size = 8),
+        legend.box = "vertical", legend.position="right", legend.key.size = unit(.13, "in")) 
+p
+pdf(paste0(dir_out, "Fig1G_enrichment_", today, ".pdf"), height = 4, width = 4)
+p
+dev.off()
+```
+
+
+
+Figure 1H: dot plot of selected Th17 related genes
+```{r}
+glist <- read.xlsx(paste0(dir_proj, "0_data/gene_lists/200304 Fig1_dotplot.xlsx"), 
+                   sheet = "final list", rowNames = F, colNames = F)[,1] %>% rev()
+glist <- factor(glist, levels = glist)
+tissue_vec <- c('SPL', 'MLN', 'PP', 'SI', 'COL')
+
+## stats for dot plot
+ct_mtx = so@assays[['RNA']]@data[glist,] %>% as.matrix()
+pct_0 = sapply(tissue_vec, function(x){
+  rowMeans(ct_mtx[,so$tissue == x] == 0) * 100
+})
+
+exp_mtx = so@assays[['integrated']]@data[glist,] %>% as.matrix()
+ave_expr = sapply(tissue_vec, function(x){
+  rowMeans(exp_mtx[,so$tissue == x])
+}) %>% apply(., 1, scale) %>% t
+
+
+
+plt_df <- data.frame(expr = as.numeric(ave_expr), pct = 100 - as.numeric(pct_0), 
+           tissue = rep(tissue_vec, each = length(glist)) %>% factor(., levels = rev(tissue_vec)),
+           gene = rep(glist, length(tissue_vec)) %>% factor(., levels = rev(glist))) 
+p <- ggplot(plt_df) +
+  geom_point(aes(x = gene, y = tissue, size = pct, color = expr)) +
+  labs(x = "", y = "") +
+  scale_colour_gradient(low = "lightgrey", high = "blue") +
+  scale_size(range = c(0, 6), trans = scales::trans_new("square", function(x) x^2, "sqrt")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"), 
+        axis.text.y = element_text(color = rev(as.character(tissue_colors(tissue_vec)))),
+        legend.title = element_text(size = 8),
+        legend.box = "horizontal", legend.position="bottom", legend.key.size = unit(.13, "in")) +
+  guides(color = guide_colorbar(title = "Scaled Average\nExpression", title.vjust = .8),
+         size = guide_legend(title = "Percent Cell\nDetected", title.vjust = .5, ))
+
+
+pdf(paste0(dir_out, "Fig1H_dotplot_", today, ".pdf"), height = 3, width = 7)
+p
+dev.off()
+```
+
+
+

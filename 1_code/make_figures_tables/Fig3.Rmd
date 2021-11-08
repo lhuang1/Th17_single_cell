@@ -1,0 +1,390 @@
+---
+title: "Figure 3: Th17 in CNS"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(tibble)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date()#"2020-12-20"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_3/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+
+Load data.
+```{r}
+so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_intra/", 
+                          clustering_date, "/FILES/CNS/meta_data.csv"), 
+                   header = T, sep = ",", row.names = 1)
+### switch cluster labels!!!
+# Quiescent: C1 -> C0
+# Migratory: C0 -> C1
+# Proliferating: C3 -> C2
+# CD8-like: C4 -> C3
+# Proinflammatory: C2 -> C4
+cluster_new <- meta$seurat_clusters
+cluster_new[meta$seurat_clusters == 1] <- 0
+cluster_new[meta$seurat_clusters == 0] <- 1
+cluster_new[meta$seurat_clusters == 3] <- 2
+cluster_new[meta$seurat_clusters == 4] <- 3
+cluster_new[meta$seurat_clusters == 2] <- 4
+meta$seurat_clusters <- cluster_new
+write.table(meta, paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_intra/", 
+                          clustering_date, "/FILES/CNS/meta_data_switched.csv"), sep = ",")
+
+reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_intra/", clustering_date, "/FILES/CNS/reductions.rds"))
+stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
+
+so <- so_all[,rownames(meta)] ## restrict to SPL EAE cells
+so@meta.data <- meta
+so$tissue_cluster <- paste(so$tissue, so$seurat_clusters, sep = "_")
+so@reductions <- reductions
+
+color_cns_clusters <- c("0" = rgb(119, 139, 158, maxColorValue = 255),
+                        "1" = rgb(225, 121, 126, maxColorValue = 255),
+                        "2" = rgb(220, 177, 206, maxColorValue = 255),
+                        "3" = rgb(212, 195, 164, maxColorValue = 255),
+                        "4" = rgb(193, 210, 208, maxColorValue = 255)) 
+```
+
+## Figure 3B: UMAP of CNS cells; color by cluster
+```{r}
+stopifnot(all(rownames(reductions$umap@cell.embeddings) == rownames(meta)))
+meta$UMAP_1 <- reductions$umap@cell.embeddings[,"UMAP_1"]
+meta$UMAP_2 <- reductions$umap@cell.embeddings[,"UMAP_2"]
+
+p <- ggplot(meta, aes(x = UMAP_1, y = UMAP_2, color = factor(seurat_clusters))) + 
+  geom_point(size = 0.5) +
+  labs(color = "Cluster") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme_classic() +
+  theme(legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        axis.text = element_text(size = 12))
+p_legend <- get_legend(p)
+pdf(file = paste0(dir_out, "Fig3_B_UMAP_by_cluster_", today, ".pdf"), width = 7, height = 7)
+p + theme(legend.position = "none")
+grid.arrange(p_legend)
+dev.off()
+```
+
+## Figure 3C: pie chart of cluster sizes
+```{r}
+df_plt <- meta %>% group_by(seurat_clusters) %>% tally() %>% 
+  mutate(cluster = paste0("CNS_", seurat_clusters)) %>% 
+  mutate(pos = cumsum(n) - n/2) %>% 
+  mutate(lab = paste0(n, "\n(", sprintf("%.1f", n/sum(n)*100), "%)"))
+p <- ggplot(df_plt) +
+  geom_bar(aes(x = 1, y = n, fill = cluster), stat = "identity") +
+  geom_text(aes(x = 1.2, y = sum(n) - pos, label = lab), hjust = 0.5, vjust = 0.5, size = 5) +
+  coord_polar(theta = "y", direction = -1) +
+  labs(x = "", y = "", fill = "") +
+  theme(panel.background = element_rect(fill = "white", color = "black"),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank())
+p
+pdf(paste0(dir_out, "Fig3_C_cluster_size_pie_", today, ".pdf"), width = 5, height = 5)
+p
+dev.off()
+```
+
+
+## Figure 3D: heatmap of cluster marker genes
+```{r}
+library(pheatmap)
+gs <- c("Cxcr6", "Samhd1", "Il7r", "Tcf7", "Btg1", "Tnfrsf9", "Ifng", "Csf2", "Lag3",
+        "Il17a-GFP", "Pdcd1", "Areg", "Havcr2", "Birc5", "Cks1b", "Cdk1", "Mki67", "Ccnb2", "Ccl5", "Cd8a", "Prf1", "Gzmk")
+markers <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_intra/", clustering_date, "/FILES/CNS/so_markers.rds"))
+### switch cluster labels!!!
+# Quiescent: C1 -> C0
+# Migratory: C0 -> C1
+# Proliferating: C3 -> C2
+# CD8-like: C4 -> C3
+# Proinflammatory: C2 -> C4
+cluster_new <- as.character(markers$cluster) %>% as.numeric()
+cluster_new[markers$cluster == 1] <- 0
+cluster_new[markers$cluster == 0] <- 1
+cluster_new[markers$cluster == 3] <- 2
+cluster_new[markers$cluster == 4] <- 3
+cluster_new[markers$cluster == 2] <- 4
+markers$cluster <- cluster_new
+saveRDS(markers, paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_intra/", clustering_date, "/FILES/CNS/so_markers_switched.rds"))
+
+thresh_fdr <- 0.05
+thresh_log2fc <- log2(1.5)
+markers <- markers %>% filter(p_val_adj < thresh_fdr & avg_logFC >= thresh_log2fc) %>% arrange(cluster)
+deg_unique <- markers[!duplicated(markers$gene),]
+all(gs %in% deg_unique$gene)
+table(deg_unique$cluster)
+
+set.seed(123)
+cells_sample <- sample(seq_along(colnames(so)), 1000) %>% sort()
+
+ann_col_df <- data.frame(
+  Cluster = factor(paste0("C", so$seurat_clusters[cells_sample]))
+)
+rownames(ann_col_df) <- colnames(so)[cells_sample]
+cluster_colors <- ggplot_default_color_descrete(length(unique(so$seurat_clusters)))
+names(cluster_colors) <- paste0("C", 0:max(as.numeric(so$seurat_clusters)))
+ann_color_ls <- list(
+  Cluster = cluster_colors
+)
+gaps_col <- cumsum(table(ann_col_df$Cluster))
+
+expr_mat <- so[["integrated"]]@data[intersect(deg_unique$gene, rownames(so[["integrated"]])),
+                                    rownames(ann_col_df)[order(ann_col_df$Cluster)]]
+all(gs %in% rownames(expr_mat))
+
+col <- colorRampPalette(c("magenta", "black", "yellow"))(100)
+breaks <- seq(-3, 3, length.out = 101)
+legend_breaks <- seq(-3, 3, length.out = 7)
+legend_labels <- paste0(c("<=", rep("", 5), ">="), legend_breaks)
+
+p <- pheatmap(expr_mat,
+         color = col,
+         breaks = breaks,
+         annotation_col = ann_col_df,
+         annotation_colors = ann_color_ls,
+         gaps_col = gaps_col,
+         legend = T,
+         legend_breaks = legend_breaks,
+         legend_labels = legend_labels,
+         cluster_cols = F,
+         cluster_rows = F,
+         show_rownames = F,
+         show_colnames = F,
+         silent = F,
+         main = "")
+
+pdf(file = paste0(dir_out, "Fig3_D_heatmap_", today, ".pdf"), width = 7, height = 7)
+grid.arrange(p$gtable)
+dev.off()
+
+write.csv(deg_unique, file = paste0(dir_out, "DEG_cluster_", today, ".csv"))
+
+```
+
+## Figure 3E: violin plots of selected cluster marker genes
+```{r}
+###### clean up code #########
+library(gridExtra)
+library(grid)
+
+glist <- read.table(paste0(dir_proj, "0_data/gene_lists/Fig3_violin"), header = F, stringsAsFactors = F)[,1]
+glist_cluster <- rep(c(1, 0, 4, 2), each = 5)
+glist <- glist[order(glist_cluster)]
+
+
+Idents(so) <- factor(so$seurat_clusters)
+pt.size <- 0.001
+so_cap <- so[glist,]
+Idents(so_cap) <- factor(so_cap$seurat_clusters)
+# so_cap[['integrated']]@data <- apply(so_cap[['integrated']]@data, 1, function(x) {pmax(pmin(x, quantile(x, 0.995)), quantile(x, 0.005))}) %>% t
+so_cap[['integrated']]@data <- apply(so_cap[['integrated']]@data, 1, function(x) {
+  x_up <- x > quantile(x, 0.995)
+  x_low <- x < quantile(x, 0.005)
+  x[x_up] <- NA
+  x[x_low] <- NA
+  x
+  }) %>% t
+
+
+set.seed(1)
+show_point <- runif(ncol(so_cap)) < 0.20
+plist <- lapply(glist, function(g){
+  p <- VlnPlot(so_cap, features = g, group.by = "seurat_clusters", ncol = 5, pt.size = 0) + labs(x = "") +
+    geom_jitter(aes(shape = show_point), size = 0.01) + 
+    scale_fill_manual(values = color_cns_clusters) +
+    scale_shape_manual(values = c(NA, 19), guide = FALSE) +
+    labs(x = "Clusters", y = "Expression") +
+    theme(legend.position = "none",
+          plot.title = element_text(face = "italic"),
+          axis.text.x = element_text(angle = 0))
+  if (g %in% c("Tmsb10", "Samhd1", "Tnfrsf9", "Nkg7")) { ## only show for first column
+    p <- p + theme(axis.title.y = element_text(color = "black"))
+  } else {
+    p <- p + theme(axis.title.y = element_text(color = "white"))
+  }
+  
+  if (g %in% c("Tnfrsf9", "Ifng", "Csf2", "Il17a-GFP", "Areg")) { ## only show for last row
+    p <- p + theme(axis.title.x = element_text(color = "black"),
+                   axis.text.x = element_text(color = "white"))
+  } else {
+    p <- p + theme(axis.title.x = element_text(color = "white"),
+                   axis.text.x = element_text(color = "white"))
+  }
+
+})
+
+
+
+
+
+pdf(paste0(dir_out, "Fig3_E_violon_20pct_", today, ".pdf"), height = 12, width = 16)
+grid.arrange(grobs = plist, nrow = 4)
+dev.off()
+```
+
+
+
+## Figure 3F: enrichment
+```{r}
+enrichment_date <- "2020-06-04"
+
+## data
+xlsx_file <- paste0(dir_proj, "2_pipeline/enrichment/CNS_clusters/", enrichment_date, "/picked_AS.xlsx")
+## switch sheet order so we have quiesent -> migratory -> prolif -> Cd8 -> proinflammatory
+# Quiescent: C1 -> C0
+# Migratory: C0 -> C1
+# Proliferating: C3 -> C2
+# CD8-like: C4 -> C3
+# Proinflammatory: C2 -> C4
+sheet_vec <- paste0("C_", 0:4)
+sheet_vec_switched <- c("C_1", "C_0", "C_4", "C_2", "C_3")
+sheet_vec_reorderd <- c("C_1", "C_0", "C_3", "C_4", "C_2")
+
+## recompute FDR
+gsea <- readRDS(paste0(dir_proj, "2_pipeline/enrichment/CNS_clusters/", enrichment_date, "/GSEA_outputs.rds"))
+for (x in sheet_vec){
+  fdr <- p.adjust(c(gsea$go_bp[[x]]$pval, gsea$kegg[[x]]$pval), method = "fdr")
+  gsea$go_bp[[x]]$FDR <- fdr[1:nrow(gsea$go_bp[[x]])]
+  gsea$kegg[[x]]$FDR <- fdr[(nrow(gsea$go_bp[[x]]) + 1):length(fdr)]
+}
+## fix cluster names
+gsea_go_bp_all <- lapply(seq_along(sheet_vec), function(i){
+  y <- gsea$go_bp[[sheet_vec[i]]]
+  y$Cluster <- sub("_", "", sheet_vec_switched[i])
+  y}) %>% Reduce(rbind, .)
+gsea_kegg_all <- lapply(seq_along(sheet_vec), function(i){
+  y <- gsea$kegg[[sheet_vec[i]]]
+  y$Cluster <- sub("_", "", sheet_vec_switched[i])
+  y}) %>% Reduce(rbind, .)
+
+
+d <- lapply(sheet_vec_reorderd, function(x){
+  tmp <- readWorkbook(xlsxFile = xlsx_file, sheet = x)
+  tmp2 <- rbind(gsea_go_bp_all[gsea_go_bp_all$pathway %in% tmp$pathway, ], gsea_kegg_all[gsea_kegg_all$pathway %in% tmp$pathway, ])
+  tmp2$Name.for.plot <- tmp$Name.for.plot[match(tmp2$pathway, tmp$pathway)]
+  tmp2
+}) %>% Reduce(rbind, .)
+
+
+pathway_name_vec <- lapply(sheet_vec_reorderd, function(x){
+  tmp <- readWorkbook(xlsxFile = xlsx_file, sheet = x)
+  tmp$Name.for.plot
+}) %>% unlist
+
+
+library(stringr)
+p_pval <- d %>% 
+  filter(NES > 0) %>% 
+  mutate(NES = ifelse(pval < 0.05, NES, NA)) %>%
+  mutate(In.figure = str_wrap(Name.for.plot, 30)) %>% 
+  mutate(In.figure = factor(In.figure, levels = rev(str_wrap(pathway_name_vec, 30)))) %>%
+  select(In.figure, Cluster, pval, padj, NES) %>% 
+  # mutate(Cluster = factor(Cluster, levels = Cluster)) %>% 
+  ggplot() +
+  geom_point(aes(x = Cluster, y = In.figure, size = -log10(pval), fill = NES, color = pval < 0.05), shape = 21) +
+  # geom_point(aes(x = Cluster, y = In.figure, size = -log10(pval), fill = NES), shape = 21) +
+  labs(x = "", y = "", fill = "NES", size = "-log10(pvalue)", color = "pvalue<0.05", title = "") +
+  scale_size(range = c(1, 6), trans = scales::trans_new("square", function(x) x^2, "sqrt")) +
+  scale_fill_gradient(low = "white", high = "red", na.value = "grey70") +
+  scale_color_manual(values = c("TRUE" = "black", "FALSE" = "grey70")) +
+  coord_fixed(ratio = 1) +
+  theme_bw() +
+  theme(axis.text.x = element_text(color = "black"),
+        # axis.text.y = element_text(hjust = -0.01, vjust = 0.5),
+        legend.title = element_text(size = 8),
+        legend.box = "vertical", legend.position="right", legend.key.size = unit(.13, "in")) 
+p_pval
+
+
+pdf(paste0(dir_out, "Fig3_F_enrichment_", today, ".pdf"), height = 4, width = 4.5)
+p_pval
+dev.off()
+```
+
+## Figure 3G: clonal expansion
+```{r}
+clonotyping_type_date <- "dominant_2020-04-02"
+clty <- read.csv(paste0(dir_proj, "2_pipeline/TCR/clonotype_assignment_", clonotyping_type_date, ".csv"), row.names = 1)
+meta_clty <- merge(meta, clty, by = 0, all.x = T, all.y = F) %>% column_to_rownames(var = "Row.names")
+meta_clty$pooled_clonotype_id <- paste(meta_clty$orig.ident, meta_clty$clonotype_id)
+meta_clty$cluster_name <- paste0("CNS_", meta_clty$seurat_clusters)
+meta_clty_noNA <- meta_clty[!is.na(meta_clty$clonotype_id),] %>% droplevels()
+sample_vec <- levels(factor(meta_clty_noNA$orig.ident))
+cluster_text_colors <- ggplot_default_color_descrete(5)
+
+##pooled
+size_df_pooled <- with(meta_clty_noNA, {table(pooled_clonotype_id, seurat_clusters)}) %>% 
+  as.data.frame() %>% filter(Freq > 0) %>% 
+  group_by(seurat_clusters) %>% mutate(ncell = c(sum(Freq), rep(NA, length(Freq) - 1)))
+  
+plt_df <- size_df_pooled %>% arrange(Freq) %>%
+  mutate(Size = cut(Freq, breaks = c(0, 1, 2, 3, 4, 5, Inf), labels = c("1", "2", "3", "4", "5", "6+"))) %>%
+  mutate(Size = factor(Size, levels = rev(c("1", "2", "3", "4", "5", "6+"))),
+         cluster = paste0("CNS_", seurat_clusters))
+
+
+p_pooled <- ggplot(plt_df) +
+  geom_bar(aes(x = 1, y = Freq, fill = Size), stat = "identity", size = 0, color = NA, position = position_fill()) +
+  coord_polar(theta = "y") +
+  geom_text(aes(x = 1, y = 0.5, label = ncell), hjust = -1.1, vjust = 2.2, size = 4.2) +
+  facet_wrap(cluster ~., ncol = 1, strip.position="left") +
+  scale_fill_manual(values = rev(brewer.pal(7, "Reds"))[1:6]) +
+  ggtitle("") +
+  labs(x = "", y = "", fill = "") +
+  theme(panel.background = element_rect(fill = "white", color = "black"),
+        panel.grid = element_blank(),
+        strip.text = element_text(face = "bold", size = 12),
+        legend.text = element_text(size = 12),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank())
+g_pooled <- ggplot_gtable(ggplot_build(p_pooled))
+stripr <- which(grepl('strip-l', g_pooled$layout$name))
+fills <- ggplot_default_color_descrete(length(unique(size_df_pooled$seurat_clusters)))
+k <- 1
+for (i in stripr) {
+  j <- which(grepl('rect', g_pooled$grobs[[i]]$grobs[[1]]$childrenOrder))
+  g_pooled$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  k <- k+1
+}
+
+pdf(paste0(dir_out, "Fig3_G_piechart_", today, ".pdf"))
+grid.arrange(g_pooled)
+dev.off()
+
+
+## expansion score
+meta_clty_noNA$tissue_clusters <- paste(meta_clty_noNA$tissue, meta_clty_noNA$seurat_clusters, sep = "_")
+tissue_cluster_vec <- sort(unique(meta_clty_noNA$tissue_clusters))
+count_mtx <- with(meta_clty_noNA, {table(pooled_clonotype_id, seurat_clusters)}) %>% 
+  as.numeric() %>% matrix(ncol = length(tissue_cluster_vec), byrow = F)
+apply(count_mtx, 2, function(x) {
+  xx <- x[x > 0]
+  p <- xx / sum(xx)
+  1 + sum(p * log2(p)) / log2(length(p))
+})
+# [1] 0.07289574 0.03889440 0.12990328 0.03001709 0.02315242 (before switching cluster labels)
+# [1] 0.03889440 0.07289574 0.03001709 0.02315242 0.12990328 (after)
+```
+
+

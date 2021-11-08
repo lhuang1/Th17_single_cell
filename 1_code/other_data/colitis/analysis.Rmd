@@ -1,0 +1,98 @@
+---
+title: "Analyze 10x Colon Colitis Data"
+output: html_notebook
+---
+
+Th17 cells in colon from mice with and without DSS colitis.
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut"
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(ggplot2)
+  library(psych)
+  source("../utils.R")
+  source("../preprocessing/utils.R")
+  source("../clustering/clustering_utils.R")
+})
+
+today <- Sys.Date()
+dir_out <- "../../2_pipeline/colitis/"
+if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+
+treatment_vec <- c("DSS", "IUT")
+```
+
+
+## Preprocessing
+```{r}
+#### load data ####
+for (trt in treatment_vec) {
+  cts <- Read10X(paste0("../../0_data/counts/colitis_control/colon_", trt, "/filtered_gene_bc_matrices/mm10/"))
+  so <- CreateSeuratObject(cts, project = trt, min.cells = 0, min.features = 1)
+  rm(cts)
+  
+  #### cell QC
+  ncell_before <- ncol(so)
+  so[["percent.mt"]] <- PercentageFeatureSet(object = so, pattern = "^mt-") # compute mitochondrial gene percentage
+  plot_cell_QC(so) # QC plots before filtering out cells
+  
+  # compute proportion of house keeping genes that are detected in each cell
+  hk_genes <- human_to_mouse(read.table("../../0_data/gene_lists/HK_Satija.txt", stringsAsFactors = F)[,1])
+  so[["HK_prop"]] <- Matrix::colMeans(so[["RNA"]]@counts[intersect(hk_genes, rownames(so)),] > 0)
+  p <- ggplot() +
+    geom_histogram(aes(x = so$HK_prop), color = "white") +
+    scale_y_log10()# histogram should be bimodal
+  print(p)
+  
+  ## subset data
+  so <- subset(x = so, subset = nFeature_RNA > 500 & nFeature_RNA < 2500 & percent.mt < 5 & HK_prop > 0.5)
+  
+  ncell_after <- ncol(so)
+  plot_cell_QC(so) # QC plots after filtering out cells
+  
+  # plot number of cells before and after cell QC
+  tmp <- data.frame(
+    stage =  factor(c("before", "after"), levels = c("before", "after")),
+    cell_number = c(ncell_before, ncell_after)
+  )
+  p <- ggplot(tmp, aes(x = stage, y = cell_number)) + 
+    geom_bar(stat = "identity", width=0.5) +
+    geom_text(aes(label = cell_number), vjust = 1.6, color="black", size = 5) +
+    labs(title = trt) +
+    theme_bw() 
+  print(p)
+  
+  saveRDS(so, file = paste0(dir_out, "so_COL_", trt, ".rds"))
+}
+```
+
+
+## Normalization, clustering and cleaning.
+
+```{r}
+for (trt in treatment_vec) {
+  so <- readRDS(file = paste0(dir_out, "so_COL_", trt, ".rds"))
+    # normalization
+  so <- SCTransform(so)
+  DefaultAssay(so) <- "SCT"
+  
+  # PCA
+  so <- RunPCA(object = so)
+  print(ElbowPlot(object = so, ndims = 50))
+  
+  # clusteirng
+  so <- FindNeighbors(object = so, dims = 1:30) 
+  so <- FindClusters(object = so) 
+  write.csv(so@meta.data, file = paste0(dir_out, "meta_data_", trt, ".csv"), quote = F)
+  
+  # UMAP
+  so <- RunUMAP(object = so, verbose = TRUE, dims = 1:30)
+  saveRDS(so@reductions, paste0(dir_out, "reductions_", trt, ".rds"))
+  saveRDS(so, file = paste0(dir_out, "so_COL_", trt, "_sct.rds"))
+}
+
+```
+

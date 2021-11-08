@@ -1,0 +1,221 @@
+---
+title: "Figure 8: Il23r signaling"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(Seurat)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date() #"2020-12-14"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_8/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+Load data.
+```{r}
+# so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", 
+                          clustering_date, "/FILES/meta_data_switched.txt"), 
+                   header = T, sep = " ")
+reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES/reductions.rds"))
+stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
+
+so <- so_all[,rownames(meta)] ## restrict to SPL EAE cells
+so@meta.data <- meta
+so$tissue_cluster <- paste(so$tissue, so$seurat_clusters, sep = "_")
+so@reductions <- reductions
+```
+
+
+
+## Figure 8A and C: Paired scatter plot of percentage of cells with non-zero UMI counts and UMAP of expression for genes of interest and Il23r in SPL EAE cluster 0 and 1
+```{r}
+library(ggsignif)
+g_vec <- c("Il17a-GFP", "Il17f", "Il2", "Csf2", "Ifng", "Il23r", "Ifngr1")
+
+# ## run pseudobulk
+# so$batch_mouse_cluster <- paste(so$batch, so$mouse, so$seurat_clusters, sep = "_")
+# batch_mouse_cluster_vec <- sort(unique(so$batch_mouse_cluster[so$seurat_clusters %in% c(0, 1)]))
+# psb_cts <- sapply(batch_mouse_cluster_vec, function(x) {
+#   Matrix::rowSums(so[["RNA"]]@counts[,so$batch_mouse_cluster == x])
+# })
+# psb_meta <- strsplit(batch_mouse_cluster_vec, split = "_") %>% unlist %>% matrix(ncol = 3, byrow = T) %>% data.frame()
+# rownames(psb_meta) <- batch_mouse_cluster_vec
+# colnames(psb_meta) <- c("batch", "mouse", "cluster")
+# psb_meta$batch_mouse <- paste(psb_meta$batch, psb_meta$mouse, sep = "_") %>% factor()
+# contrasts(psb_meta$batch_mouse) = contr.sum(nlevels(psb_meta$batch_mouse))
+# psb_meta$cluster <- paste0("SPL_", psb_meta$cluster) %>% factor(., levels = c("SPL_0", "SPL_1"))
+# 
+# library(edgeR)
+# # Create a DGEList data object.
+# dgeFull <- DGEList(psb_cts)
+# # Estimate the normalization factors
+# dgeFull <- calcNormFactors(dgeFull, method="TMM")
+# # create design matrix
+# design <- model.matrix(~ cluster + batch_mouse, data = psb_meta)
+# # Estimate dispersion
+# dgeFull <- estimateDisp(dgeFull, design = design)
+# fit <- glmFit(dgeFull, design = design)
+# lrt <- glmLRT(fit, coef = 2)
+# # Extract summaries of differential expression statistics.
+# res <- topTags(lrt, n = Inf, adjust.method = "BH", sort.by = "none", p.value = 1)
+# 
+# psb_fdr <- res$table[g_vec, "FDR"]
+# names(psb_fdr) <- g_vec
+
+map_sig_fun <- function(x) {
+  if (x < 0.001) {return("***")}
+  if (x < 0.01) {return("**")}
+  if (x < 0.05) {return("*")}
+  return("N.S.")
+}
+
+plist_scatter <- list()
+plist_umap <- list()
+for (g in g_vec) {
+  plt_df <- data.frame(
+    tissue_cluster = so$tissue_cluster,
+    batch = so$batch,
+    mouse = so$mouse,
+    batch_mouse = paste(so$batch, so$mouse, sep = "_"),
+    expr = so[["integrated"]]@data[g,],
+    detected = so[["RNA"]]@counts[g,] > 0,
+    UMAP_1 = so@reductions$umap@cell.embeddings[,"UMAP_1"],
+    UMAP_2 = so@reductions$umap@cell.embeddings[,"UMAP_2"]
+  )
+  plt_pct_df <- plt_df %>% 
+    filter(tissue_cluster %in% c("SPL_0", "SPL_1")) %>% 
+    group_by(tissue_cluster, batch, mouse) %>% summarise(pct_det = mean(detected) * 100) %>% 
+    ungroup() %>% mutate(batch_mouse = ifelse(is.na(mouse), batch, paste(batch, mouse, sep = ":")))
+
+  plt_pct_df <- plt_pct_df[order(plt_pct_df$batch_mouse),] # make sure the pairs are correctly matched
+  
+  glmm_fit <- glmer(detected ~ tissue_cluster + (1 | batch_mouse), 
+                    data = plt_df[plt_df$tissue_cluster %in% c("SPL_0", "SPL_1"),], family = binomial())
+  glmm_summ <- summary(glmm_fit)
+  glmm_pval <- glmm_summ$coefficients["tissue_clusterSPL_1", "Pr(>|z|)"]
+  plt_df_pval <- data.frame(
+    gene = g,
+    xmin = "SPL_0",
+    xmax = "SPL_1", 
+    pval_text = map_sig_fun(glmm_pval),
+    pval_pos_y = max(plt_pct_df$pct_det)
+  )
+  
+  plist_scatter[[g]] <- ggplot(plt_pct_df) +
+    geom_line(aes(x = tissue_cluster, y = pct_det, group = batch_mouse), color = "grey50", size = 1) +
+    geom_point(aes(x = tissue_cluster, y = pct_det, fill = tissue_cluster), shape = 21, size = 4, alpha = 1) +
+    scale_fill_manual(values = SPL_EAE_cluster_0_1_colors()) +
+    geom_signif(manual = TRUE, data = plt_df_pval, 
+                mapping = aes(xmin = xmin, xmax = xmax,
+                              y_position = 1.15 * pval_pos_y, 
+                              annotations = pval_text),
+                margin_top = 0.1, textsize = 8, vjust = 0.5) +
+    ylim(0, max(plt_pct_df$pct_det) * 1.25) +
+    labs(x = "", y = "Percent of Cells", title = g) +
+    theme_bw() +
+    theme(legend.position = "none",
+          plot.title = element_text(face = "bold.italic", hjust = 0.5, size = 15),
+          axis.text = element_text(size = 12, color = "black"))
+  if (g == "Il17a-GFP" | g == "Il23r" | g == "Ifngr1") {
+    plist_scatter[[g]] <- plist_scatter[[g]] + theme(axis.title.y = element_text(size = 12, color = "black"))
+  } else {
+    plist_scatter[[g]] <- plist_scatter[[g]] + theme(axis.title.y = element_text(size = 12, color = "white"))
+  }
+  
+  # if (g == "Ifngr1") { ## very high percentage, thus need adjust height of p-value and y-axis range
+  #   plist_scatter[[g]] <- plist_scatter[[g]]
+  # }
+  
+  ## UMAP
+  plt_df$expr_truncated <- plt_df$expr %>% pmax(., max(quantile(plt_df$expr, 0.01), 0)) %>% pmin(., quantile(plt_df$expr, 0.99))
+  plt_df <- plt_df[order(plt_df$expr), ]
+  my_breaks <- seq(max(floor(quantile(plt_df$expr, 0.01)), 0), ceiling(quantile(plt_df$expr, 0.99)), length.out = 5)
+  plist_umap[[g]] <- plt_df %>% 
+    filter(tissue_cluster %in% c("SPL_0", "SPL_1")) %>% 
+    ggplot() +
+    geom_point(aes(x = UMAP_1, UMAP_2, color = expr_truncated, size = expr_truncated)) +
+    scale_color_gradient(name = "", low = "grey", high = "blue", breaks = my_breaks, limits = range(my_breaks)) +
+    scale_size_continuous(name = "", range = c(0.1, 1), breaks = my_breaks, limits = range(my_breaks), guide = FALSE) +
+    # guides(color = guide_legend(), size = guide_legend()) + 
+    labs(x = "UMAP_1", y = "UMAP_2", title = g) +
+    theme_classic() +
+    theme(axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 12, color = "white"),
+          axis.ticks = element_blank(),
+          # legend.position = "none",
+          legend.key.width = grid::unit(0.05, "in"),
+          legend.key.size = grid::unit(0.15, "in"),
+          legend.text = element_text(size = 7, color = "black"),
+          plot.title = element_text(face = "bold.italic", hjust = 0.5, color = "white"),
+          axis.title.y = element_text(size = 12, color = "black"))
+  if (g == "Il17a-GFP" | g == "Il23r" | g == "Ifngr1") {
+    plist_umap[[g]] <- plist_umap[[g]] + theme(axis.title.y = element_text(size = 12, color = "black"))
+  } else {
+    plist_umap[[g]] <- plist_umap[[g]] + theme(axis.title.y = element_text(size = 12, color = "white"))
+  }
+}
+
+plt_df <- data.frame(
+    tissue_cluster = ifelse(so$tissue_cluster %in% c("SPL_0", "SPL_1"), so$tissue_cluster, "Other") %>% 
+      factor(., levels = c("SPL_0", "SPL_1", "Other")),
+    UMAP_1 = so@reductions$umap@cell.embeddings[,"UMAP_1"],
+    UMAP_2 = so@reductions$umap@cell.embeddings[,"UMAP_2"]
+  )
+p_cluster_umap <- plt_df %>% 
+  # filter(tissue_cluster %in% c("SPL_0", "SPL_1")) %>% 
+  ggplot() +
+  geom_point(aes(x = UMAP_1, y = UMAP_2, color = tissue_cluster), size = 0.1) +
+  scale_color_manual(values = c(SPL_EAE_cluster_0_1_colors(), "Other" = "grey30")) +
+  guides(color = guide_legend(override.aes = list(size = 3))) + 
+  labs(x = "UMAP_1", y = "UMAP_2", title = "", color = "") +
+  theme_classic() +
+  theme(axis.title = element_text(size = 12, color = "black"),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        # legend.position = "none",
+        # legend.key.width = grid::unit(0.05, "in"),
+        legend.text = element_text(size = 12, color = "black"),
+        plot.title = element_text(face = "bold", hjust = 0.5))
+
+grobs <- c(list(p_cluster_umap),
+           plist_scatter[setdiff(names(plist_scatter), c("Il23r", "Ifngr1"))], 
+           plist_umap[setdiff(names(plist_umap), c("Il23r", "Ifngr1"))])
+layout_matrix <- matrix(c(1, 2, 3, 4, 5, 6, 1, 7, 8, 9, 10, 11), nrow = 2, byrow = TRUE)
+
+pdf(paste0(dir_out, "Fig8_A_scatter_umap_gene_of_interest_SPL0_vs_SPL1_", today, ".pdf"), width = 3 * 6, height = 6)
+grid.arrange(grobs = grobs, layout_matrix = layout_matrix,
+             heights = c(1, 1), widths = c(2, 1, 1, 1, 1, 1))
+dev.off()
+
+
+
+grobs_Ifngr1 <- list(plist_scatter[["Ifngr1"]], plist_umap[["Ifngr1"]])
+
+pdf(paste0(dir_out, "Fig8_C_scatter_umap_Ifngr1_SPL0_vs_SPL1_", today, ".pdf"), width = 3 * 2, height = 3)
+grid.arrange(grobs = grobs_Ifngr1, nrow = 1)
+dev.off()
+
+
+grobs_il23r <- list(plist_scatter[["Il23r"]], plist_umap[["Il23r"]])
+
+pdf(paste0(dir_out, "Fig8_D_scatter_umap_Il23r_SPL0_vs_SPL1_", today, ".pdf"), width = 3 * 2, height = 3)
+grid.arrange(grobs = grobs_il23r, nrow = 1)
+dev.off()
+```
+
+

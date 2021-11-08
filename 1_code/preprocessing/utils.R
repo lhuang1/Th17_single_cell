@@ -43,6 +43,22 @@ parse_assignment <- function(ident, batch) {
   return(tissue_label)
 }
 
+check_gfp_consitency <- function(cts, gfp_cts) {
+  gtf_chr19 <- read.table("0_data/ref_mm10_gfp_tdt/mm10_chr19_gfp_tdt_20190827/genes/genes.gtf",
+                            header = F, sep = "\t", stringsAsFactors = F)
+  tmp <- sapply(strsplit(gtf_chr19$V9, split = ";"), function(x){x[grep("gene_name", x)]})
+  genes_chr19 <- sapply(strsplit(unique(tmp), split = " "), function(x){x[3]})
+  
+  # check consistency
+  genes_check <- intersect(genes_chr19, rownames(cts))
+  cts_sub <- cts[genes_check,]
+  gfp_cts_sub <- gfp_cts[genes_check, colnames(cts_sub)]
+  
+  cor_vec <- sapply(1:nrow(cts_sub), function(i) {
+    cor(cts_sub[i,], gfp_cts_sub[i,])
+  })
+  hist(cor_vec, breaks = 20)
+}
 
 ### plot cell QC measures for a Seurat object (so) ####
 plot_cell_QC <- function(so){
@@ -128,7 +144,7 @@ prep_data <- function(tissue, treatment, batch, mouse, project_name, dir_in){
   # dev.off()
   
   ## add other meta info
-  so$batch <- batch
+  so$batch <- sub("batch", "b", batch)
   so$treatment <- treatment
   so$is_hashing <- tissue == "hashed"
   so$GFP_positive <- so[['RNA']]@counts["Il17a-GFP",] > 0
@@ -137,12 +153,13 @@ prep_data <- function(tissue, treatment, batch, mouse, project_name, dir_in){
     ## split by tissue
     so_by_tissue <- SplitObject(so, split.by = "tissue")
     so_by_tissue <- lapply(so_by_tissue, function(x){
-      x$orig.ident <- paste(x$tissue, x$orig.ident, sep = "_")
+      x$orig.ident <- paste(x$tissue, x$treatment, x$batch, x$mouse, sep = "_")
       x
     })
     names(so_by_tissue) <- paste0(names(so_by_tissue), "_", project_name)
     so_by_tissue[sapply(so_by_tissue, ncol) < 50] <- NULL # do not return if <50 cells in a tissue passed QC
   } else {
+    so$orig.ident <- paste(so$tissue, so$treatment, so$batch, so$mouse, sep = "_")
     so_by_tissue <- list(so)
     names(so_by_tissue) <- project_name
   }
@@ -185,8 +202,5 @@ find_batch_cluster <- function(meta) {
   }
   return(bc)
 }
-
-    
-
 
 

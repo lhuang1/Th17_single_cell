@@ -1,0 +1,365 @@
+---
+title: "Figure 5: Two populations in SPL at EAE"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(ggpubr)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(openxlsx)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date() #"2020-12-16"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_5/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+Load data.
+```{r}
+# so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", 
+                          clustering_date, "/FILES/meta_data_switched.txt"), 
+                   header = T, sep = " ")
+reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES/reductions.rds"))
+stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
+
+so <- so_all[,rownames(meta)] ## restrict to SPL EAE cells
+so@meta.data <- meta
+so@reductions <- reductions
+```
+
+
+
+## Figure 5A: UMAP of SPL EAE clusters
+```{r}
+plt_df <- data.frame(reductions$umap@cell.embeddings)
+plt_df$cluster <- meta$seurat_clusters
+
+p <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = factor(cluster))) + 
+  geom_point(size = 0.1) +
+  scale_color_manual(values = SPL_EAE_all_cluster_colors()) +
+  labs(color = "Cluster") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme_classic() +
+  theme(legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        axis.text = element_text(size = 12))
+p_legend <- get_legend(p)
+pdf(file = paste0(dir_out, "Fig5_A_UMAP_SPL_EAE_clusters_", today, ".pdf"), width = 7, height = 7)
+p + theme(legend.position = "none")
+grid.arrange(p_legend)
+dev.off()
+```
+
+
+## Figure 5B: Heatmap of known homeostatic and pathogenic genes
+```{r}
+library(pheatmap)
+
+glist <- c("Cxcr6", "Csf2", "Gzmb", "Ifng", "Tbx21", "Bhlhe40", "Lgals3",
+           "Slamf6", "Sell", "Tcf7", "Il6ra", "Cd27", "Foxp1", "Ccr7")
+all(glist %in% rownames(so[["integrated"]])) ## check if these genes names are all found in integrated data
+
+## extract integrated expression and z-normalize across cells
+in_spl_0 <- so$seurat_clusters == 0
+in_spl_1 <- so$seurat_clusters == 1
+expr_mat <- so[["integrated"]]@data[glist, c(which(in_spl_0), which(in_spl_1))]
+expr_mat_z <- t(apply(expr_mat, 1, scale))
+colnames(expr_mat_z) <- colnames(expr_mat)
+
+## heatmap column annotation
+ann_col <- data.frame(
+  Cluster = c(rep("SPL_0", sum(in_spl_0)), rep("SPL_1", sum(in_spl_1))) %>%
+    factor(., levels = c("SPL_0", "SPL_1"))
+)
+rownames(ann_col) <- colnames(expr_mat)
+## annotation colors
+ann_colors <- list(Cluster = SPL_EAE_cluster_0_1_colors())
+## color palette and breaks
+my_palette <- colorRampPalette(colors = c("magenta", "black", "yellow"))(100)
+my_breaks <- seq(-2, 2, length.out = 101)
+
+p <- pheatmap(expr_mat_z,
+         scale = "none",
+         cluster_rows = T,
+         cluster_cols = F,
+         color = my_palette,
+         breaks = my_breaks,
+         cutree_rows = 2,
+         # gaps_col = sum(in_spl_0),
+         annotation_col = ann_col,
+         annotation_colors = ann_colors,
+         show_rownames = T,
+         show_colnames = F,
+         main = "")
+
+pdf(paste0(dir_out, "Fig5_B_heatmap_genes_", today, ".pdf"), width = 6, height = 3)
+grid.arrange(p$gtable)
+dev.off()
+```
+
+## Figure 5C: Compare enrichment of signatures (from Nir) in SPL EAE cluster 0 and 1
+```{r}
+## load fGSEA results
+enrichment_date <- "2020-05-21"
+gsea <- readRDS(paste0(dir_proj, "2_pipeline/enrichment/EAE_SPL_0_vs_1/", enrichment_date, "/GSEA_outputs.rds"))
+
+## signatures to plot (ordered)
+sigs_to_plot <- c(
+  'Pathogenic_Th17' = 'Pathogenic Th17',
+  'Th17_Th1_like_memory-plus' = 'Th17/Th1-like memory',
+  'Th17_Th1_like_effector_CNS-plus' = 'Th17/Th1-like effector in CNS',
+  'Th17_self_renewing-plus' = 'Th17 self-renewing',
+  'Th17_pre_Th1_like_effector-plus' = 'Th17-pre Th1 like effector',
+  'Th17_Th1_like_effector_LN-plus' = 'Th17/Th1-like effector LN',
+  'Th17_Dysfunctional_senescent-plus' = 'Th17 dysfunctional/senescent'
+)
+
+## make bar plot
+p <- gsea %>% filter(pathway %in% names(sigs_to_plot)) %>%
+  mutate(signature = sigs_to_plot[pathway]) %>%
+  mutate(enriched_in = ifelse(NES > 0, "SPL_1", "SPL_0")) %>%
+  ggplot(aes(x = reorder(signature, NES), y = NES)) +
+  geom_col(aes(fill = enriched_in), width = 0.7) +
+  scale_fill_manual(values = SPL_EAE_cluster_0_1_colors()) +
+  ylim(-3, 3) +
+  coord_flip() +
+  labs(x="", y="Normalized Enrichment Score", fill = "Enriched in") +
+  theme_bw() +
+  theme(legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12, color = "black"))
+p
+pdf(paste0(dir_out, "Fig5_C_barplot_enrichment_", today, ".pdf"), width = 6, height = 5)
+print(p)
+dev.off()
+```
+
+## Figure 5D: Compare clonal expansion level in SPL EAE cluster 0 and 1 with pie-charts.
+```{r}
+## load clonotype data
+clonotyping_type_date <- "dominant_2020-04-02"
+clty_all <- read.csv(paste0(dir_proj, "2_pipeline/TCR/clonotype_assignment_", clonotyping_type_date, ".csv"), 
+                     row.names = 1)
+## merge clonotypes IDs to meta data
+meta$clonotype_id <- clty_all[rownames(meta),"clonotype_id"]
+meta_noNA <- meta[!is.na(meta$clonotype_id),] %>% droplevels()
+## add sample name
+meta_noNA$sample <- paste(meta_noNA$batch, meta_noNA$mouse, sep = "_") %>% 
+  factor(., labels = c("Mouse 1", "Mouse 2", "Mouse 3", "Mouse 4"))
+meta_noNA$tissue_cluster <- paste(meta_noNA$tissue, meta_noNA$seurat_clusters, sep = "_")
+
+## make pie chart
+clone_size_df <- meta_noNA %>% 
+  filter(seurat_clusters %in% c(0, 1)) %>% 
+  group_by(sample, clonotype_id, tissue_cluster) %>% 
+  tally(name = "clone_size") %>% 
+  mutate(size_cat = cut(clone_size, breaks = c(0, 1, 2, 3, 4, 5, Inf), 
+                        labels = c("1", "2", "3", "4", "5", "6+"))) %>% 
+  mutate(size_cat = factor(size_cat, levels = rev(c("1", "2", "3", "4", "5", "6+"))))
+cluster_size_df <- meta_noNA %>% 
+  filter(seurat_clusters %in% c(0, 1)) %>% 
+  group_by(sample, tissue_cluster) %>% tally(name = "cluster_size")
+
+
+p <- ggplot(clone_size_df) +
+  geom_bar(aes(x = 1, y = clone_size, fill = size_cat),
+           stat = "identity", size = 0, color = NA, position = position_fill()) +
+  geom_text(aes(x = 1, y = 0.5, label = cluster_size), data = cluster_size_df, hjust = -0.7, vjust = 2.2) +
+  coord_polar(theta = "y") +
+  facet_grid(sample ~ tissue_cluster, switch = "y") +
+  scale_fill_manual(values = rev(brewer.pal(7, "Reds"))[1:6]) +
+  ggtitle("") +
+  labs(x = "", y = "", fill = "") +
+  theme(panel.background = element_rect(fill = "white", color = "black"),
+        panel.grid = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        strip.text.x = element_text(size = 15, face = "bold"),
+        strip.text.y = element_text(size = 14),
+        legend.text = element_text(size = 12))
+p
+
+g <- ggplot_gtable(ggplot_build(p))
+stripr <- which(grepl('strip-t', g$layout$name))
+fills <- SPL_EAE_cluster_0_1_colors()
+k <- 1
+for (i in stripr) {
+  j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+  g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  k <- k+1
+}
+
+grid.arrange(g)
+
+pdf(paste(dir_out, "Fig5_D_pie_clonal_expansion_", today, ".pdf"), width = 4, height = 5)
+grid.arrange(g, newpage = T)
+dev.off()
+
+
+## expansion score
+scores <- list()
+for (i in levels(meta_noNA$sample)) {
+  count_mtx <- with(meta_noNA[meta_noNA$sample == i & meta_noNA$tissue_cluster %in% c("SPL_0", "SPL_1"), ],
+                    {table(clonotype_id, seurat_clusters)}) %>% 
+    as.numeric() %>% matrix(ncol = 2, byrow = F)
+  scores[[i]] <- apply(count_mtx, 2, function(x) {
+    xx <- x[x > 0]
+    p <- xx / sum(xx)
+    1 + sum(p * log2(p)) / log2(length(p))
+  })
+}
+scores
+# $`Mouse 1`
+# [1] 0.01763231 0.07146897
+# 
+# $`Mouse 2`
+# [1] 0.02574524 0.11645313
+# 
+# $`Mouse 3`
+# [1] 0.01562122 0.02376786
+# 
+# $`Mouse 4`
+# [1] 0.02232489 0.07966719
+
+```
+
+
+## Figure 5E: MA plot for SPL EAE Cluster 0 vs. 1
+```{r}
+de_date <- "2020-07-22"
+de_res <- readRDS(paste0(dir_proj, "2_pipeline/differential_expression/SPL_EAE_0_1/", de_date, "/results.rds"))
+genes_df <- read.xlsx(paste0(dir_proj, "3_output/old_figures/Figure5_SPL/Vocanoplot_genes_AS.xlsx"), rowNames = T)
+glist <- c(genes_df$Cxcr6, genes_df$Slamf6, "Cxcr5", "Tbx21")
+
+thresh_log2fc <- 0.25#log2(1.5)
+thresh_fdr <- 0.05
+
+spl_colors <- SPL_EAE_cluster_0_1_colors()
+spl_colors <- c(spl_colors, "None" = "#000000")
+
+# df <- de_res$table %>% 
+#   rownames_to_column(var = "gene") %>%
+#   mutate(up_in = ifelse(logFC > thresh_log2fc & FDR < thresh_fdr, "SPL_0", ifelse(logFC < -thresh_log2fc & FDR < thresh_fdr, "SPL_1", "None"))) %>% ## + logFC means up in Cxcr6+ cells
+#   mutate(up_in = ifelse(grepl("Rps", gene) | grepl("Rpl", gene), NA, up_in)) %>% 
+#   mutate(rank_pval_up = rank(ifelse(up_in == "SPL_1", PValue, NA)), rank_pval_down = rank(ifelse(up_in == "SPL_0", PValue, NA)))
+# 
+# p <- df %>% 
+#   mutate(label = ifelse(gene %in% glist, gene, NA)) %>%
+#   mutate(PValue = ifelse(PValue == 0, 10e-324, PValue)) %>% 
+#   ggplot(aes(x = -logFC, y = -log10(PValue), color = up_in)) +
+#   geom_point() +
+#   geom_label_repel(aes(label = label), show.legend = F, min.segment.length = 0) +
+#   scale_color_manual(values = spl_colors, na.translate = F) +
+#   labs(x = expression(log[2]~Fold~Change~SPL_1~vs.~SPL_0), y = expression(-log[10](PValue)), color = "") +
+#   ylim(0, 350) +
+#   theme_bw() +
+#   theme(axis.text = element_text(size = 12, color = "black"),
+#         axis.title = element_text(size = 15, color = "black"))
+# p
+# 
+# pdf(paste0(dir_out, "Fig5_E_volcano_", today, ".pdf"), width = 7, height = 5)
+# p + theme(legend.position = "none")
+# dev.off()
+
+de_up <- rownames(de_res$table)[de_res$table$logFC > thresh_log2fc & de_res$table$FDR < thresh_fdr]
+de_down <- rownames(de_res$table)[de_res$table$logFC < -thresh_log2fc & de_res$table$FDR < thresh_fdr]
+deg <- c(de_up, de_down)
+
+plt_df <- de_res$table %>%
+  rownames_to_column(var = "gene") %>%
+  filter(!(grepl("Rps", gene) | grepl("Rpl", gene))) %>% 
+  mutate(logFC = -logFC) %>% ## flip direction so +lfc means up in SPL_1
+  mutate(up_in = ifelse(logFC > thresh_log2fc & FDR < thresh_fdr, "SPL_1",
+                        ifelse(logFC < -thresh_log2fc & FDR < thresh_fdr, "SPL_0", "N.S.")) %>%
+           factor(levels = c("SPL_0", "SPL_1", "N.S."))) %>%
+  mutate(label = ifelse((gene %in% glist | abs(logFC) > 2 | logCPM > 12)  & up_in != "N.S.", gene, NA))
+
+## set colors
+col_de <- c(SPL_EAE_cluster_0_1_colors(), "N.S." = "black")
+
+p <- ggplot(plt_df, aes(x = logCPM, y = logFC, color = up_in)) +
+  geom_point() +
+  geom_label_repel(aes(label = label)) +
+  scale_color_manual(values = col_de) +
+  labs(x = "Average Log2 CPM", y = "Log2 Fold Change (SPL_1 vs. SPL_0)") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p
+pdf(file = paste0(dir_out, "Fig5_E_MAplot_", today, ".pdf"), width = 7, height = 5)
+p
+dev.off()
+```
+
+
+
+## Figure 5F: Umap for bulk signatures
+```{r}
+## load signature
+date_de <- "2020-02-04"
+sigs <- readRDS(paste0(dir_proj, "2_pipeline/spl_clusters/bulk/", date_de, "/signature_slamf6_vs_cxcr6_all.rds"))
+
+so <- AddModuleScore(so, features = sigs, name = "SIGS_")
+colnames(so@meta.data)[grep("SIGS_", colnames(so@meta.data))] <- names(sigs)
+
+in_spl_0_1 <- so$seurat_clusters %in% c(0, 1)
+
+plist <- list()
+for (i in names(sigs)) {
+  plt_df <- data.frame(so@reductions$umap@cell.embeddings)
+  plt_df$expr <- NA
+  plt_df$expr[in_spl_0_1] <- so@meta.data[in_spl_0_1,i]
+  
+  # max_cutoff <- quantile(plt_df$expr[plt_df$expr > 0], 0.95, na.rm = T)
+  # min_cutoff <- quantile(plt_df$expr[plt_df$expr > 0], 0.05, na.rm = T)
+  # min_cutoff <- 0
+  max_cutoff <- quantile(plt_df$expr, 0.95, na.rm = T)
+  min_cutoff <- quantile(plt_df$expr, 0.05, na.rm = T)
+  plt_df$expr_cap <- plt_df$expr %>% pmin(., max_cutoff) %>% pmax(., min_cutoff)
+  
+  title_label <- ifelse(grepl("Cxcr6", i), "CXCR6+ Signature", "SLAMF6+ Signature")
+  title_color <- ifelse(grepl("Cxcr6", i), SPL_EAE_cluster_0_1_colors(2), SPL_EAE_cluster_0_1_colors(1))
+  plist[[i]] <- ggplot(plt_df) +
+    geom_point(aes(UMAP_1, UMAP_2, color = expr_cap), size = 0.5) +
+    scale_color_gradient(low = "grey80", high = "blue", na.value = "grey50") +
+    labs(color = "", title = title_label) +
+    theme_classic() +
+    theme(plot.title = element_text(face = "bold", hjust = 0, colour = title_color),
+          axis.text = element_blank(), axis.ticks = element_blank())
+}
+
+
+
+
+pdf(file = paste0(dir_out, "Fig5_F_UMAP_bulk_signature_", today, ".pdf"), width = 4, height = 8)
+grid.arrange(grobs = plist, nrow = 2)
+dev.off()
+```
+
+
+
+## Figure 5G: flow plots from Alex
+
+
+
+## Figure 5H, I, J: see ATAC-seq analysis
+
+

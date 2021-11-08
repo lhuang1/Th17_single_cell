@@ -1,52 +1,35 @@
----
-title: "Clean out Irrelavant Cell Types or Possible Contaminations"
-output: html_notebook
----
+#### Clean out non-Th17 cells and batch-specific clusters #####
 
-This notebook uses a list of markers to iteratively detect and remove possible contamination (i.e. myeloid cells). In each round, (over-)clustering was performed on integrated data for each tissue x treatment combination. Clusters stained for contamination markers were removed.
-
-(We did 3 rounds of cleaning.)
-
-```{r}
+#### configuration ####
 rm(list = ls())
-dir_proj <- "/singerlab/linglin/Th17_single_cell/"
-dir_lib <- "~/R/x86_64-pc-linux-gnu-library/lib_th17/" ## v3.2.2
-dir_out <- paste0(dir_proj, "output/results/preprocessing/cleaning/")
+setwd("/singerlab/linglin/Th17_single_cell_eae_ut")
+cargs <- commandArgs(trailingOnly = TRUE)
+if (length(cargs) == 0) {
+  today <- "2020-01-29"
+  integrate_date <- "2020-01-29"
+  clean_round <- "3"
+  run_clustering <- TRUE
+} else {
+  today <- cargs[1]
+  integrate_date <- cargs[2]
+  clean_round <- cargs[3]
+  run_clustering <- as.logical(cargs[4])
+}
+dir_out <- paste0("2_pipeline/preprocessing/cleaning/", today, "/round_", clean_round, "/")
 if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 
-suppressPackageStartupMessages({
-  library(Seurat, lib.loc = dir_lib)
-})
-source(paste0(dir_proj, "code/util.R"))
-source(paste0(dir_proj, "code/preprocess/util_preprocessing.R"))
-```
 
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+source("1_code/utils.R")
+source("1_code/preprocessing/utils.R")
 
+so_integrated_all <- readRDS(file = paste0("2_pipeline/preprocessing/integration/", integrate_date, "/so_integrated_SCTransformed.rds"))
 
-```{r}
-## load data
-so_integrated_all <- readRDS(file = paste0(dir_proj, "output/results/preprocessing/integration/so_integrated_SCTransformed.rds"))
-
-# genes of interest and contamination markers
-cont_markers <- read.table(paste0(dir_proj, "data/gene_lists/genes_for_cleanup.csv"), stringsAsFactors = FALSE)[,1]
-genes_of_interest <- read.table(paste0(dir_proj, "data/gene_lists/genes_of_interest.csv"), stringsAsFactors = FALSE)[,1]
-
-# tissue and treatment info
-tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL", "CNS", "DLN")
-treatment_vec <- c("UT", "EAE")
-```
-
-After each round, Alex S. examines the clusters and make a list of clusters to remove. Batch specific clusters were also identified and added to the list of clusters to remove.
-
-```{r}
-clean_round = 0 # first round
-
-if (clean_round != 0) { # not initial round; need to take out clusters
+if (clean_round != "0") { # not initial round; need to take out clusters
   # read clusters to take out
-  dir_last_round <- paste0("output/results/preprocessing/cleaning/round_", clean_round - 1, "/")
-  if (!dir.exists(dir_last_round)) {
-    stop("Last round not found! Double check $clean_round parameter.")
-  }
+  dir_last_round <- paste0("2_pipeline/preprocessing/cleaning/", today, "/round_", as.numeric(clean_round) - 1, "/")
   take_out <- read.csv(file = paste0(dir_last_round, "clusters_take_out.csv"), header = F, row.names = 1)
   keep_cells <- list()
   for (i in rownames(take_out)) {
@@ -59,7 +42,15 @@ if (clean_round != 0) { # not initial round; need to take out clusters
   saveRDS(colnames(so_integrated_all), file = paste0(dir_out, "keep_cell_names.rds"))
 } 
 
-batch_clusters <- list() ## batch driven clusters
+tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL", "CNS", "DLN")
+treatment_vec <- c("UT", "EAE")
+# load genes of interest and contamination markers
+cont_markers <- read.table("0_data/gene_lists/Genes_for_cleanup.csv", stringsAsFactors = FALSE)[,1]
+cont_markers <- c(cont_markers, "Ptprc", "Tcrg-C4", "Tcrg-C2", "Tcrg-C1", "Il17a-GFP") ## add a few genes
+genes_of_interest <- read.table("0_data/gene_lists/genes_of_interest_Alex_20190421.csv", stringsAsFactors = FALSE)[,1]
+genes_of_interest <- c(genes_of_interest, "Il17a-GFP")
+
+batch_clusters <- list()
 
 for (tissue in tissue_vec) {
   for (treatment in treatment_vec) {
@@ -155,6 +146,7 @@ for (tissue in tissue_vec) {
                                  only.pos = TRUE, min.pct = 0.25, max.cells.per.ident = 500,
                                  logfc.threshold = 0.25)
     saveRDS(so_markers, paste0(dir_out, sample_name, "/FILES/so_markers.rds"))
+    save_and_plot_markers(so_integrated, so_markers, dir_markers = paste0(dir_out, sample_name))
     
     ## Identify batch specific clusters
     batch_clusters[[sample_name]] <- find_batch_cluster(so_integrated@meta.data)
@@ -162,4 +154,3 @@ for (tissue in tissue_vec) {
 }
 
 saveRDS(batch_clusters, file = paste0(dir_out, "batch_specific_clusters.rds"))
-```

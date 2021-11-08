@@ -1,0 +1,500 @@
+---
+title: "Revision"
+output: html_notebook
+---
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(RColorBrewer)
+  library(grid)
+  library(gridExtra)
+  library(ggsignif)
+  library(ggrepel)
+  library(pheatmap)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(openxlsx)
+  library(edgeR)
+  library(Seurat)
+})
+source("../utils.R")
+
+today <- Sys.Date()
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+dir_out <- "/singerlab/linglin/Th17_single_cell_eae_ut/2_pipeline/revision/"
+if (!dir.exists(dir_out)) dir.create(dir_out)
+```
+
+
+## Science
+
+### Cluster 8 in UT GFP+ inter tissue clustering
+1. Bar plot of # of DE genes
+2. Upload DE gene list
+```{r}
+thresh_lfc <- log2(1.5)
+thresh_fdr <- 0.05
+results <- readRDS("../../2_pipeline/differential_expression/Cluster_UT_GFPpos_inter/2020-04-16/results.rds")
+
+marker_ls <- lapply(results, function(x){
+  x[x$logFC > thresh_lfc & x$FDR < thresh_fdr,] %>% rownames_to_column(var = "Gene") %>% arrange(-logFC)
+})
+
+n_df <- sapply(marker_ls, nrow) %>% data.frame() %>% `colnames<-`(., c("n")) %>% rownames_to_column(var = "cluster")
+
+p <- ggplot(n_df, aes(x = cluster, y = n)) +
+  geom_bar(stat = "identity", width = 0.6, color = "white", fill = "black") +
+  geom_text(aes(label = n), hjust = 0.5, vjust = -0.5) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 500)) +
+  labs(x = "Cluster", y = "Number of genes") +
+  theme_classic()
+
+pdf(paste0(dir_out, "barplot_n_cluster_markers_UT_GFPpos_inter_", today, ".pdf"), width = 5, height = 4)
+p
+dev.off()
+
+wb <- createWorkbook()
+for (i in names(marker_ls)) {
+  sheet = paste0("Cluster_", i)
+  addWorksheet(wb, sheetName = sheet)
+  writeData(wb, sheet, marker_ls[[i]], rowNames = F, colNames = T)
+}
+saveWorkbook(wb, file = paste0(dir_out, "cluster_markers_UT_GFPpos_inter_", today, ".xlsx"))
+
+```
+
+
+
+### UT GFP all clusters not annotated
+1. marker genes for each not annotated population (SPL_1, SPL_2, SPL_4, SI_1, SI_3, PP_1)
+```{r}
+cluster_vec <- c("SPL_1", "SPL_2", "SPL_4", "SI_1", "SI_3", "PP_1")
+tissue_vec <- unique(sub("_.*", "", cluster_vec))
+marker_df <- lapply(tissue_vec, function(tissue) {
+  tmp <- readRDS(paste0("../../2_pipeline/clustering/UT_GFPall_intra/2020-03-25/FILES/", tissue, "/so_markers.rds"))
+  tmp$tissue_cluster <- paste0(tissue, "_", tmp$cluster)
+  if (tissue == "SPL") { ## remember that SPL0 and SPL1 labels are switched!!
+    tmp$tissue_cluster[tmp$cluster == "1"] <- "SPL_0"
+    tmp$tissue_cluster[tmp$cluster == "0"] <- "SPL_1"
+  }
+  # print(dim(tmp))
+  tmp
+}) %>% Reduce(rbind, .)
+
+wb <- createWorkbook()
+for (i in cluster_vec) {
+  sheet = i
+  addWorksheet(wb, sheetName = sheet)
+  writeData(wb, sheet, marker_df[marker_df$tissue_cluster == i,], rowNames = F, colNames = T)
+}
+saveWorkbook(wb, file = paste0(dir_out, "cluster_markers_UT_GFPall_not_annotated_", today, ".xlsx"), overwrite = T)
+
+```
+
+
+### Tregs share with SPL vs. not
+```{r}
+clustering_date <- "2020-03-25"
+assign_clonotype_date <- "2020-04-02"
+tissue_vec <- c("SPL", "MLN", "PP", "SI", "COL")
+
+### load data
+cl_all <- read.csv(paste0("../../2_pipeline/TCR/clonotype_assignment_dominant_", assign_clonotype_date, ".csv"), row.names = 1, header = T)
+meta_ls <- sapply(tissue_vec, simplify = FALSE, FUN = function(tissue) {
+  if (tissue == "SPL") {
+    fname <- paste0("../../2_pipeline/clustering/UT_GFPall_intra/", clustering_date, "/FILES/SPL/meta_data_switched.txt")
+    meta_tissue <- read.table(fname, sep = " ", row.names = 1, header = T)
+  } else {
+    fname <- paste0("../../2_pipeline/clustering/UT_GFPall_intra/", clustering_date, "/FILES/", tissue, "/meta_data.csv")
+    meta_tissue <- read.table(fname, sep = ",", row.names = 1, header = T)
+  }
+  meta_tissue$clonotype_id <- cl_all[rownames(meta_tissue), "clonotype_id"]
+  meta_tissue$pooled_clonotype_id <- paste(meta_tissue$treatment, meta_tissue$batch, meta_tissue$mouse, meta_tissue$clonotype_id)
+  
+  #####################
+  #*******debug@@@@@@@
+  meta_tissue$batch <- as.character(meta_tissue$batch)
+  meta_tissue$batch[meta_tissue$treatment == "UT" & meta_tissue$batch == "b8"] <- "b9"
+  meta_tissue$batch[meta_tissue$treatment == "UT" & meta_tissue$batch == "b7"] <- "b8"
+  meta_tissue$batch <- factor(meta_tissue$batch)
+  
+  meta_tissue
+})
+
+if (!("so_all" %in% ls())) {
+  so_all <- readRDS("../../for_paper/results/preprocessing/so_processed_dominant_TCR_2020-03-24.rds")
+}
+
+### identify treg/non-treg cells sharing TCR with SPL
+### clonotype sharing
+treg_cluster <- c(
+  "MLN" = 3,
+  "PP" = 3,
+  "SI" = 2,
+  "COL" = 2
+)
+
+spl_clty_vec <- unique(meta_ls$SPL$pooled_clonotype_id[!is.na(meta_ls$SPL$raw_clonotype_id)])
+
+
+plt_df <- sapply(names(treg_cluster), function(i){
+  meta_ls[[i]] %>% rownames_to_column(var = "cell_name") %>% 
+    filter(!is.na(raw_clonotype_id)) %>%
+    filter(seurat_clusters == treg_cluster[i]) %>% 
+    summarise(n_shared = sum(pooled_clonotype_id %in% spl_clty_vec),
+              n_not_shared = length(pooled_clonotype_id) - n_shared) %>% 
+    unlist()
+}) %>% t %>% 
+  data.frame() %>% 
+  rownames_to_column(var = "tissue") %>% 
+  gather(key = "type", value = "n", -tissue) %>% 
+  mutate(type = factor(type, levels = c("n_not_shared", "n_shared"), labels = c("Not shared", "Shared")))
+p <- ggplot(plt_df, aes(x = tissue, y = n, fill = tissue, alpha = type)) +
+  geom_bar(stat = "identity", color = "black", width = 0.6) +
+  scale_alpha_manual(values = c("Not shared" = 0.5, "Shared" = 1)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "", y = "Number of cells", fill = "", alpha = "") +
+  theme_classic() +
+  theme(axis.title = element_text(size = 15, color = "black"),
+        axis.text = element_text(size = 12, color = "black"))
+pdf(paste0(dir_out, "barplot_n_treg_share_with_SPL_", today, ".pdf"), width = 5, height = 5)
+p
+dev.off()
+
+res_ls <- list()
+for (i in names(treg_cluster)) {
+  cat("\n\n", i, "\n")
+  meta_sub <- meta_ls[[i]] %>% rownames_to_column(var = "cell_name") %>% 
+    filter(!is.na(raw_clonotype_id)) %>%
+    filter(seurat_clusters == treg_cluster[i]) %>% 
+    mutate(is_shared = factor(pooled_clonotype_id %in% spl_clty_vec, levels = c("FALSE", "TRUE"))) %>% 
+    column_to_rownames(var = "cell_name")
+  so <- so_all[,rownames(meta_sub)]
+  so@meta.data <- meta_sub
+  so$batch <- factor(so$batch)
+  keep_genes <- Matrix::rowMeans(so[["RNA"]]@counts > 0) > 0.1
+  dge <- DGEList(counts = so[["RNA"]]@counts[keep_genes,], samples = so@meta.data)
+  dge <- calcNormFactors(dge, method="TMM")
+  dge$samples$cdr <- scale(dge$samples$nFeature_RNA)
+  if (nlevels(dge$samples$batch) == 1) {
+    design <- model.matrix(~ is_shared + cdr, data = dge$samples)
+  } else {
+    contrasts(dge$samples$batch) = contr.sum(nlevels(dge$samples$batch))
+    design <- model.matrix(~ is_shared + batch + cdr, data = dge$samples)
+  }
+  cat(dim(dge))
+  print(table(dge$samples$is_shared, paste0(dge$samples$batch, "_", dge$samples$mouse)) %>% apply(., 2, function(x){x/sum(x)}))
+  dge <- estimateDisp(dge, design = design)
+  qfit <- glmQLFit(dge, design = design, dispersion = dge$trended.dispersion)
+  qlf <- glmQLFTest(qfit, coef = 2)
+  res_ls[[i]] <- topTags(qlf, n = Inf, adjust.method = "BH", sort.by = "none", p.value = 1)$table
+}
+
+saveRDS(res_ls, file = paste0(dir_out, "edgeR_UT_GFPall_Treg_shared_vs_not_with_SPL_", today, ".rds"))
+```
+```{r}
+date_de <- "2021-05-19"
+thresh_fdr = 0.2
+thresh_lfc = 0#log2(1.5)
+res_ls <- readRDS(paste0(dir_out, "edgeR_UT_GFPall_Treg_shared_vs_not_with_SPL_", date_de, ".rds"))
+all_genes <- Reduce(union, lapply(res_ls, rownames))
+up_genes <- lapply(res_ls, function(x){
+  rownames(x)[x$logFC > thresh_lfc & x$FDR < thresh_fdr]
+})
+up_mtx <- sapply(up_genes, function(x){all_genes %in% x})
+rownames(up_mtx) <- all_genes
+
+down_genes <- lapply(res_ls, function(x){
+  rownames(x)[x$logFC < -thresh_lfc & x$FDR < thresh_fdr]
+})
+down_mtx <- sapply(down_genes, function(x){all_genes %in% x})
+rownames(down_mtx) <- all_genes
+
+
+pdf(paste0(dir_out, "venn_heatmap_UT_GFPall_Treg_shared_vs_not_with_SPL_", today, ".pdf"), width = 5, height = 7)
+vennDiagram(vennCounts(up_mtx), main = "UP in Shared")
+pheatmap(up_mtx[rowSums(up_mtx)>0,] + 0, main = "UP in Shared", fontsize_row = 4)
+vennDiagram(vennCounts(down_mtx), main = "DOWN in Shared")
+pheatmap(down_mtx[rowSums(down_mtx)>0,] + 0, main = "DOWN in Shared", fontsize_row = 4)
+dev.off()
+
+
+thresh_fdr = 0.05
+thresh_lfc = log2(1.5)
+plt_df <- res_ls$COL %>% 
+  rownames_to_column(var = "gene") %>% 
+  mutate(de_direction = ifelse(FDR >= thresh_fdr, "NS",
+                               ifelse(logFC > thresh_lfc, "Shared", 
+                                      ifelse(logFC < -thresh_lfc, "Not shared", "NS")))) %>% 
+  mutate(de_direction = factor(de_direction, levels = c("Not shared", "Shared", "NS"))) %>% 
+  mutate(gene_label = ifelse((de_direction == "NS") | grepl("Rpl", gene) | grepl("Rps", gene), NA, gene))
+table(plt_df$de_direction)
+p <- ggplot(plt_df, aes(x = logFC, y = -log10(PValue), label = gene_label)) +
+  geom_point(aes(color = de_direction)) +
+  geom_text_repel(color = "black", size = 2, fontface = "italic", segment.size = 0.3) +
+  scale_x_continuous(limits = c(-3, 3)) +
+  scale_color_manual(values = c("Shared" = "red", "Not shared" = "blue", "NS" = "grey25")) +
+  labs(x = "Log2 fold change (shared vs. not shared with SPL)",  y = "-log10(p-value)", color = "",
+       caption = paste0("(FDR<", thresh_fdr, ", FC>", round(2^thresh_lfc, 2), ")")) +
+  theme_bw()
+pdf(paste0(dir_out, "volcano_COL_UT_GFPall_Treg_shared_vs_not_with_SPL_", today, ".pdf"), width = 7, height = 4)
+p
+dev.off()
+```
+
+
+## Clonal similarity between SPL and the gut
+SPL and Gut shown to have high similarity at EAE. How about at homeostasis? 
+Why only SPL_1 share with DLN and CNS but not with the gut while SPL_0 feeds into SPL_1?
+
+1. Make Figure 4E and 4F for homeostasis to give an overview of sharing
+```{r}
+
+date_analysis <- "2021-05-27"
+bh_hc_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/bh_hclust_UT_", date_analysis, ".rds"))
+bh_dist_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/bh_similarity_UT_", date_analysis, ".rds"))
+clone_size_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/size_table_UT_", date_analysis, ".rds"))
+
+library(corrplot)
+library(dendextend)
+
+pdf(file = paste0(dir_out, "corrplot_UT_clonal_similarity_", today, ".pdf"), width = 7, height = 7)
+# layout(matrix(c(1, 1, 2, 2, 2, 2, 2, 2, 2, 2), nrow = 10, ncol = 1, byrow = TRUE))
+# ## dendrogram
+# par(mar=c(0, 7, 2, 6.5))
+# dend <- as.dendrogram(bh_hc_ls$pooled)
+# dend %>% set("labels", "") %>% plot()
+## corrplot
+sim_mtx <- bh_dist_ls$pooled
+tissue_vec <- c("MLN", "PP", "SPL", "COL", "SI")
+sim_mtx <- sim_mtx[tissue_vec, tissue_vec]
+corrplot(sim_mtx,
+         is.corr = F,
+         type="upper", order="original", method = "circle",
+         outline = T,
+         col = rev(col_corr(200)),
+         mar = c(0, 0, 0, 0),
+         tl.col = tissue_colors(rownames(sim_mtx)),
+         tl.pos = 'td', tl.cex = 2,
+         diag = T, na.label = " ")
+dev.off()
+
+library(pheatmap)
+
+total_size <- rowSums(clone_size_ls$pooled)
+min_total_size <- 10
+
+plt_mtx <- clone_size_ls$pooled[total_size > min_total_size,]
+plt_mtx_scale <- 100 * apply(plt_mtx, 2, function(x){x/sum(x)})
+plt_mtx_scale_cap <- pmin(plt_mtx_scale, quantile(plt_mtx_scale, 0.9))
+
+p <- pheatmap(plt_mtx_scale_cap, 
+              cluster_rows = TRUE, 
+              cluster_cols = TRUE, 
+              clustering_method = "ward.D2",
+              show_rownames = F, 
+              color = rev(col_corr_pos_skip(100)),
+              # main = plt_title, 
+              fontsize = 8,
+              fontsize_col = 11,
+              silent = T)
+which_col_names <- which(p$gtable$layout$name == "col_names")
+# p$gtable$grobs[[which_col_names]]$gp$col = tissue_colors(p$tree_col$labels[p$tree_col$order])
+# p$gtable$grobs[[which_col_names]]$rot = 45
+# p$gtable$grobs[[which_col_names]]$hjust = 1
+# p$gtable$grobs[[which_col_names]]$vjust = 1
+# p$gtable$grobs[[which_col_names]]$gp$fontsize = 13
+
+pdf(file = paste0(dir_out, "heatmap_UT_clone_size_row_percentage_", today, ".pdf"), width = 4, height = 6)
+grid.arrange(p$gtable)
+dev.off()
+
+```
+
+
+2. SPL1 cells don't show high similarity with the gut possibly because those clonotypes (shared by gut, SPL_0 and SPL_1) are less expanded.
+-- Make density plot or histogram to show that in the SPL_1 clonotypes, sizes of the clonotypes that share with CNS and DLN are bigger than those share with gut ==> use box plot instead
+<!-- -- Use pie chart to show fraction of SPL_1 clonotypes share with (1) SPL_0 and CNS or DLN; (2) SPL_0 and any of the gut; (3) SPL_0 only; (4) none. -->
+
+```{r}
+clustering_date <- "2020-03-25"
+assign_clonotype_date <- "2020-04-02"
+tissue_vec <- c("SPL", "MLN", "PP", "SI", "COL", "CNS", "DLN")
+
+### load data
+cl_all <- read.csv(paste0("../../2_pipeline/TCR/clonotype_assignment_dominant_", assign_clonotype_date, ".csv"), row.names = 1, header = T)
+meta_ls <- sapply(tissue_vec, simplify = FALSE, FUN = function(tissue) {
+  if (tissue == "SPL") {
+    fname <- paste0("../../2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES//meta_data_switched.txt")
+    meta_tissue <- read.table(fname, sep = " ", row.names = 1, header = T)
+  } else {
+    fname <- paste0("../../2_pipeline/clustering/EAE_GFPall_intra/", clustering_date, "/FILES/", tissue, "/meta_data.csv")
+    meta_tissue <- read.table(fname, sep = ",", row.names = 1, header = T)
+  }
+  meta_tissue$clonotype_id <- cl_all[rownames(meta_tissue), "clonotype_id"]
+  meta_tissue$pooled_clonotype_id <- paste(meta_tissue$treatment, meta_tissue$batch, meta_tissue$mouse, meta_tissue$clonotype_id)
+  meta_tissue
+})
+
+
+spl_1_clty_vec <- unique(meta_ls$SPL$pooled_clonotype_id[(!is.na(meta_ls$SPL$raw_clonotype_id)) & meta_ls$SPL$seurat_clusters == 1])
+spl_0_clty_vec <- unique(meta_ls$SPL$pooled_clonotype_id[(!is.na(meta_ls$SPL$raw_clonotype_id)) & meta_ls$SPL$seurat_clusters == 0])
+
+tissue_vec_nospl <- c("MLN", "PP", "SI", "COL", "CNS", "DLN")
+clty_ls <- sapply(tissue_vec_nospl, function(x){
+  unique(meta_ls[[x]]$pooled_clonotype_id) %>% setdiff(., NA)
+})
+
+clty_gut <- Reduce(union, clty_ls[c("MLN", "PP", "SI", "COL")])
+clty_brain <- Reduce(union, clty_ls[c("CNS", "DLN")])
+
+## sizes of SPL_1 clonotypes that share with the gut or brain
+size_spl1 <- meta_ls$SPL %>% filter(seurat_clusters == 1, !is.na(raw_clonotype_id)) %>% group_by(pooled_clonotype_id) %>% tally() %>% 
+  mutate(shared_with_gut = pooled_clonotype_id %in% clty_gut,
+         shared_with_brain = pooled_clonotype_id %in% clty_brain,
+         shared = ifelse(shared_with_gut,
+                         ifelse(shared_with_brain, "Shared with\nboth", "Shared with\nintestinal only"),
+                         ifelse(shared_with_brain, "Shared with\nCNS/DLN only", "Not shared")) %>% 
+           factor(., levels = c("Shared with\nintestinal only", "Shared with\nCNS/DLN only", "Shared with\nboth", "Not shared")))
+library(ggbeeswarm)
+p <- ggplot(size_spl1, aes(x = shared, y = n, color = shared)) +
+  geom_quasirandom() +
+  geom_boxplot(fill = NA, color = "black", width = 0.1, outlier.shape = NA) +
+  # scale_y_log10() +
+  labs(x = "", y = "Number of clonotypes", fill = "", color = "") +
+  theme_bw() +
+  theme(axis.text = element_text(color = "black"))
+
+
+# ## pie chart to show fraction of SPL_1 clonotypes share with (1) SPL_0 and CNS or DLN; (2) SPL_0 and any of the gut; (3) SPL_0 only; (4) none.
+# plt_df <- size_spl1 %>% mutate(shared_with_spl0 = pooled_clonotype_id %in% spl_0_clty_vec) %>% 
+#   mutate(shared_v2 = ifelse(shared == "Not shared", 
+#                             ifelse(shared_with_spl0, "SPL_0 only", "Not shared"),
+#                             ifelse(shared == "Shared with\nintestinal only", 
+#                                    ifelse(shared_with_spl0, "SPL_0 and intestinal", "Intestinal"),
+#                                    ifelse(shared == "Shared with\nCNS/DLN only", 
+#                                           ifelse(shared_with_spl0, "SPL_0 and CNS/DLN", "CNS/DLN"),
+#                                           ifelse(shared_with_spl0, "SPL_0, CNS/DLN and intestinal", "CNS/DLN and intestinal")))) %>% 
+#            factor(., levels = c("SPL_0 only", "SPL_0 and intestinal", "SPL_0 and CNS/DLN", "SPL_0, CNS/DLN and intestinal",
+#                                 "CNS/DLN", "Intestinal", "CNS/DLN and intestinal", "Not shared"))) %>% 
+#   group_by(shared_v2) %>% tally(name = "n_c")
+
+
+
+pdf(file = paste0(dir_out, "boxplot_SPL1_clone_sizes_by_sharing_status_", today, ".pdf"), width = 6, height = 4)
+p
+dev.off()
+```
+
+
+
+## SPL EAE smaller clusters
+
+1. Prepare spleen cluster map similar to figure 3 with pie chart and heatmap, showing those three clusters have low de genes, are not interesting, or are tfh/proliferating cells
+
+```{r}
+source("../../1_code/utils.R")
+color_spl_cluster <- SPL_EAE_all_cluster_colors()
+names(color_spl_cluster) <- paste0("SPL_", names(color_spl_cluster))
+
+clustering_date <- "2020-03-25"
+fname <- paste0("../../2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES//meta_data_switched.txt")
+meta_SPL <- read.table(fname, sep = " ", row.names = 1, header = T)
+
+
+df_plt <- meta_SPL %>% group_by(seurat_clusters) %>% tally() %>% 
+  mutate(cluster = paste0("SPL_", seurat_clusters)) %>% 
+  mutate(pos = cumsum(n) - n/2) %>% 
+  mutate(lab = paste0(n, "\n(", sprintf("%.0f", n/sum(n)*100), "%)"))
+p <- ggplot(df_plt) +
+  geom_bar(aes(x = 1, y = n, fill = cluster), stat = "identity") +
+  geom_text(aes(x = 1.3, y = sum(n) - pos, label = lab), hjust = 0.5, vjust = 0.5, size = 3.5) +
+  scale_fill_manual(values = color_spl_cluster) +
+  coord_polar(theta = "y", direction = -1) +
+  labs(x = "", y = "", fill = "") +
+  # theme_classic() +
+  theme(panel.background = element_rect(fill = "white", color = "black"),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank())
+p
+pdf(paste0(dir_out, "SPL_EAE_cluster_size_pie_", today, ".pdf"), width = 5, height = 5)
+p
+dev.off()
+
+```
+
+Heatmap of DE genes.
+```{r}
+markers_SPL <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES/so_markers.rds"))
+cluster_new <- as.character(markers_SPL$cluster) %>% as.numeric()
+cluster_new[markers_SPL$cluster == 1] <- 0
+cluster_new[markers_SPL$cluster == 0] <- 1
+markers_SPL$cluster <- cluster_new
+
+thresh_fdr <- 0.05
+thresh_log2fc <- log2(1.5)
+markers_SPL <- markers_SPL %>% filter(p_val_adj < thresh_fdr & avg_logFC >= thresh_log2fc) %>% arrange(cluster)
+deg_unique <- markers_SPL[!duplicated(markers_SPL$gene),]
+table(deg_unique$cluster)
+
+
+if (!("so_all" %in% ls())) {
+  so_all <- readRDS("../../for_paper/results/preprocessing/so_processed_dominant_TCR_2020-03-24.rds")
+}
+so <- so_all[,rownames(meta_SPL)]
+
+set.seed(123)
+cells_sample <- sample(seq_along(colnames(so)), 1000) %>% sort()
+ann_col_df <- data.frame(
+  Cluster = factor(paste0("SPL_", meta_SPL$seurat_clusters[cells_sample]))
+)
+rownames(ann_col_df) <- colnames(so)[cells_sample]
+ann_color_ls <- list(
+  Cluster = color_spl_cluster
+)
+gaps_col <- cumsum(table(ann_col_df$Cluster))
+
+expr_mat <- so[["integrated"]]@data[intersect(deg_unique$gene, rownames(so[["integrated"]])),
+                                    rownames(ann_col_df)[order(ann_col_df$Cluster)]]
+
+col <- colorRampPalette(c("magenta", "black", "yellow"))(100)
+breaks <- seq(-3, 3, length.out = 101)
+legend_breaks <- seq(-3, 3, length.out = 7)
+legend_labels <- paste0(c("<=", rep("", 5), ">="), legend_breaks)
+
+p <- pheatmap(expr_mat,
+         color = col,
+         breaks = breaks,
+         annotation_col = ann_col_df,
+         annotation_colors = ann_color_ls,
+         gaps_col = gaps_col,
+         legend = T,
+         legend_breaks = legend_breaks,
+         legend_labels = legend_labels,
+         cluster_cols = F,
+         cluster_rows = F,
+         show_rownames = F,
+         show_colnames = F,
+         silent = F,
+         main = "")
+
+pdf(file = paste0(dir_out, "heatmap_EAE_SPL_clusters_", today, ".pdf"), width = 7, height = 7)
+grid.arrange(p$gtable)
+dev.off()
+
+## save marker genes in xlsx
+wb <- createWorkbook()
+cluster_vec <- sort(unique(markers_SPL$cluster))
+for (i in cluster_vec) {
+  sheet <- paste0("SPL_", i)
+  addWorksheet(wb, sheet)
+  tmp <- markers_SPL %>% filter(cluster == i) %>% column_to_rownames(var = "gene")
+  writeData(wb, sheet, tmp, rowNames = T, colNames = T)
+}
+saveWorkbook(wb, file = paste0(dir_out, "cluster_markers_EAE_SPL_", today, ".xlsx"), overwrite = TRUE)
+
+```
+

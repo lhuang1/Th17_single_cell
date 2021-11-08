@@ -1,0 +1,216 @@
+---
+title: "Figure 7: plasticity between two populations"
+output: html_notebook
+---
+
+```{r}
+rm(list = setdiff(ls(), "so_all"))
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(tibble)
+source(paste0(dir_proj, "1_code/utils.R"))
+
+#### configuration ####
+today <- Sys.Date() #"2020-12-17"
+clustering_date <- "2020-03-25"
+prep_type_date <- "dominant_TCR_2020-03-24"
+
+dir_out <- paste0(dir_proj, "3_output/Figure_7/")
+if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+```
+
+Load data.
+```{r}
+# so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", 
+                          clustering_date, "/FILES/meta_data_switched.txt"), 
+                   header = T, sep = " ")
+reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES/reductions.rds"))
+stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
+
+so <- so_all[,rownames(meta)] ## restrict to SPL EAE cells
+so@meta.data <- meta
+so$tissue_cluster <- paste(so$tissue, so$seurat_clusters, sep = "_")
+so@reductions <- reductions
+```
+
+
+## Figure 7A: Barplot of percentage of cells sharing TCR between SPL EAE cluster 0 and 1
+```{r}
+analysis_date <- "2020-11-04"
+plt_df <- readRDS(paste0(dir_proj, "2_pipeline/TCR/EAE_SPL0_vs_SPL1/cell_pct_SPL0_SPL1_shared_unique_", 
+                         analysis_date, ".rds"))
+plt_df$is_shared <- factor(plt_df$is_shared, levels = c("Unique", "Shared"), labels = c("Not Shared", "Shared"))
+
+p <- plt_df %>% 
+  group_by(tissue_cluster) %>% mutate(text_y = cumsum(pct) - pct/2) %>% 
+  mutate(text_label = paste0(sprintf("%.1f", pct), "%")) %>% 
+  ggplot(aes(x = tissue_cluster, y = pct, fill = is_shared)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7, color = "black") +
+  geom_text(aes(y = text_y, label = text_label), size = 4) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 100)) +
+  # scale_fill_manual(values = c("white", "black")) +
+  theme_classic() +
+  labs(x = "", y = "Percent of Cells", fill = "") +
+  theme(axis.text = element_text(size = 13, color = "black"),
+        axis.title = element_text(size = 13, color = "black"),
+        legend.title = element_text(size = 13, color = "black"),
+        legend.text = element_text(size = 13, color = "black"),
+        panel.grid = element_blank())
+p
+pdf(paste0(dir_out, "Fig7_A_percent_cell_shared_", today, ".pdf"), width = 4, height = 4)
+p
+dev.off()
+```
+
+## Figure 7B: Barplot of clone sizes that are shared or unique to SPL EAE cluster 0 and 1
+```{r}
+analysis_date <- "2020-11-04"
+plt_df <- readRDS(paste0(dir_proj, "2_pipeline/TCR/EAE_SPL0_vs_SPL1/clone_size_SPL0_SPL1_shared_unique_", 
+                         analysis_date, ".rds"))
+plt_df$type <- factor(plt_df$type, levels = c("Unique", "Shared"), labels = c("Not Shared", "Shared"))
+
+p <- ggplot(plt_df, aes(x = type, y = clone_size, fill = clone_size_cat)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  facet_wrap(~tissue_cluster, nrow = 1) +
+  scale_fill_manual(values = rev(brewer.pal(7, "Reds"))[1:6]) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1200)) +
+  theme_bw() +
+  labs(x = "", y = "Number of Cells", fill = "Clone Size\nin Cluster") +
+  theme(axis.text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 13),
+        legend.title = element_text(size = 13),
+        legend.text = element_text(size = 13),
+        panel.grid = element_blank())
+p
+pdf(paste0(dir_out, "Fig7_B_clonal_expansion_", today, ".pdf"), width = 4, height = 4)
+p
+dev.off()
+
+
+## expansion score
+count_mtx <- plt_df %>% mutate(tissue_cluster_shared = paste(tissue_cluster, type, sep = ":")) %>%
+  select(pooled_clonotype_id, tissue_cluster_shared, clone_size) %>% 
+  spread(key = tissue_cluster_shared, value = clone_size) %>% 
+  column_to_rownames(var = "pooled_clonotype_id")
+count_mtx[is.na(count_mtx)] <- 0
+
+apply(count_mtx, 2, function(x) {
+    xx <- x[x > 0]
+    p <- xx / sum(xx)
+    1 + sum(p * log2(p)) / log2(length(p))
+  })
+```
+
+
+
+
+## Figure 7C: Bar plot of cell cluster membership in clones that are shared by SPL EAE cluster 0 and 1
+```{r}
+analysis_date <- "2020-11-04"
+plt_df <- readRDS(paste0(dir_proj, "2_pipeline/TCR/EAE_SPL0_vs_SPL1/clone_size_SPL0_SPL1_shared_unique_", 
+                         analysis_date, ".rds"))
+
+plt_df <- plt_df %>% 
+  filter(type == "Shared") %>% 
+  group_by(pooled_clonotype_id) %>% 
+  mutate(clone_size_total = sum(clone_size)) %>% 
+  filter(clone_size_total >= 5) %>% 
+  mutate(pct = clone_size / clone_size_total * 100)
+
+clonotype_order <- plt_df %>% filter(tissue_cluster == "SPL_1") %>% arrange(pct) %>% select(pooled_clonotype_id) %>% unlist() %>% as.character()
+plt_df$pooled_clonotype_id <- factor(plt_df$pooled_clonotype_id, levels =  clonotype_order)
+  
+p_pct <- ggplot(plt_df) +
+  geom_bar(aes(x = pooled_clonotype_id, y = pct, fill = tissue_cluster), width = 0.8, 
+           stat = "identity", position = "stack") +
+  geom_hline(yintercept = 50, linetype = 2) +
+  scale_fill_manual(values = SPL_EAE_cluster_0_1_colors()) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size = 15, color = "black"),
+        axis.text.y = element_text(size = 12, color = "black")) +
+  labs(x = "Clonotypes", y = "% of cells", fill = "")
+
+lim_up <- quantile(plt_df$clone_size_total, 0.95)
+my_fill_breaks <- seq(0, ceiling(lim_up/10)*10, length.out = 5)
+my_fill_labels <- c(my_fill_breaks[1:4], paste0(">=", my_fill_breaks[5]))
+p_size <- plt_df %>% ungroup() %>% 
+  mutate(n_total_cap = pmin(clone_size_total, lim_up)) %>% 
+  ggplot() +
+  geom_bar(aes(x = pooled_clonotype_id, y = 1, fill = n_total_cap), stat = "identity") +
+  scale_fill_gradientn(colours = rev(c("#B2182B", "#D6604D", "#F4A582", "#FDDBC7")),
+                       limits = c(0, max(my_fill_breaks)),
+                       breaks = my_fill_breaks,
+                       labels = my_fill_labels) +
+  scale_y_continuous(expand = c(0, 0)) +
+  coord_fixed() +
+  labs(x = "", y = " ", fill = "Clone Size") +
+  theme_bw() +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+  
+
+pdf(file = paste0(dir_out, "Fig7_C_bar_expansion_by_clonotype_", today, ".pdf"), width = 7, height = 5)
+egg::ggarrange(p_size, p_pct, heights = c(1, 0.5), nrow = 2)
+dev.off()
+```
+
+## Figure 7D: Violin plot compare proliferation signature in SPL EAE cluster 0 and 1
+```{r}
+## compute score
+## read and parse proliferating signature from our UT GFP+ inter tissue clustering
+de <- readRDS(paste0(dir_proj, "2_pipeline/differential_expression/Cluster_UT_GFPpos_inter/2020-04-16/results.rds"))
+sig <- de[["7"]] %>% rownames_to_column(var = "gene") %>% 
+  filter(FDR < 0.05 & logFC > log2(1.5)) %>% 
+  arrange(FDR) %>% select(gene) %>% unlist %>% as.character()
+is_detectd <- Matrix::rowSums(so[["RNA"]]@counts[sig,]) > 0 
+
+so_sub <- so[,so$seurat_clusters %in% c(0, 1)]
+so_sub <- AddModuleScore(so_sub, list(sig), name = "SIG")
+colnames(so_sub@meta.data)[colnames(so_sub@meta.data) == "SIG1"] <- "Proliferating_all"
+
+set.seed(1)
+so_sub$show_point <- runif(ncol(so_sub)) < 0.50
+spl_cols <- SPL_EAE_cluster_0_1_colors()
+
+plt_df <- so_sub@meta.data[, c("Proliferating_all", "tissue_cluster", "show_point")]
+t_test_out <- t.test(x = plt_df$Proliferating_all[plt_df$tissue_cluster == "SPL_0"],
+                     y = plt_df$Proliferating_all[plt_df$tissue_cluster == "SPL_1"],
+                     paired = F, var.equal = F)
+mapped_p <- ifelse(t_test_out$p.value < 0.001, "***", 
+                   ifelse(t_test_out$p.value < 0.01, "**",
+                          ifelse(t_test_out$p.value < 0.05, "*", "N.S.")))
+# plt_df$Proliferating_all_truncated <- plt_df$Proliferating_all %>% 
+#   pmax(., quantile(plt_df$Proliferating_all, 0.001)) %>% 
+#   pmin(., quantile(plt_df$Proliferating_all, 0.999))
+plt_df_sub <- plt_df %>% 
+  filter((Proliferating_all > quantile(Proliferating_all, 0.001)) & (Proliferating_all < quantile(Proliferating_all, 0.999)))
+p <- ggplot(data = plt_df_sub, 
+            mapping = aes(x = tissue_cluster, y = Proliferating_all, fill = tissue_cluster)) +
+  geom_violin() +
+  geom_jitter(aes(shape = show_point), size = 0.01) + 
+  geom_boxplot(width = 0.1, fill = NA, color = "white", outlier.shape = NA) +
+  geom_signif(xmin = "SPL_0", xmax = "SPL_1", y_position = 1.1 * max(plt_df_sub$Proliferating_all), 
+              vjust = 0.6, textsize = 10,
+              annotations = mapped_p) +
+  scale_shape_manual(values = c(NA, 19), guide = FALSE) +
+  scale_fill_manual(values = spl_cols) + 
+  labs(x = "", y = "Signature Score") +
+  ggtitle("Proliferation") + 
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 15, color = "black"),
+        axis.text = element_text(size = 12, color = "black"),
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+p
+pdf(paste0(dir_out, "Fig7_D_violin_proliferation_signature_q001_q999_", today, ".pdf"), width = 3, height = 4)
+p
+dev.off()
+```

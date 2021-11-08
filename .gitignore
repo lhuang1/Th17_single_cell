@@ -42,6 +42,9 @@ vignettes/*.pdf
 data/
 output/
 lib/
+0_data/
+2_pipeline/
+obsolete/
 *.rds
 *.html
 *.pdf

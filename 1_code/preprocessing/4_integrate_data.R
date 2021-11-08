@@ -1,36 +1,42 @@
----
-title: "Integrate 9 Batches of Data"
-output: html_notebook
----
+#### integrate all samples after QC #####
 
-This notebook uses Seurat v3 to perform normalization (SCTransform) and data integration. TCR information was also appended to the meta.data slot.
-
-
-```{r}
+#### configuration ####
 rm(list = ls())
-dir_proj <- "/singerlab/linglin/Th17_single_cell/"
-dir_lib <- "~/R/x86_64-pc-linux-gnu-library/lib_th17/" ## v3.2.2
-dir_out <- paste0(dir_proj, "output/results/preprocessing/integration/")
+options(future.globals.maxSize= Inf)
+setwd("/singerlab/linglin/Th17_single_cell_eae_ut")
+cargs <- commandArgs(trailingOnly = TRUE)
+if (length(cargs) == 0) {
+  today <- "2020-01-29"
+  qc_date <- "2020-01-22"
+} else {
+  today <- cargs[1]
+  qc_date <- cargs[2]
+}
+dir_out <- paste0("2_pipeline/preprocessing/integration/", today, "/")
 if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 
-suppressPackageStartupMessages({
-  library(Seurat, lib.loc = dir_lib)
-})
-```
 
+library(Seurat)
 
-
-```{r}
 ## read data
-so_list <- readRDS(paste0(dir_proj, "output/preprocessing/QC/so_list.rds"))
+so_list <- readRDS(paste0("2_pipeline/preprocessing/QC/", qc_date, "/so_list.rds"))
 
+### exclude non-hashing samples <100 cells or hashing samples <50 cells after QC
 ### rename cells to make sure they are unique
-so_list <- lapply(so_list, function(so) {
-  RenameCells(so, new.names = paste(so$orig.ident, colnames(so), sep = "_"))
-})
-  
+idx_exclude <- c()
+for (i in 1:length(so_list)) {
+  # cat(i,"...\n")
+  if ((ncol(so_list[[i]]) < 50) | (ncol(so_list[[i]]) < 100 & so_list[[1]]$is_hashing[1])) {
+    idx_exclude <- c(idx_exclude, i)
+  } else {
+    so_list[[i]] <- RenameCells(so_list[[i]], new.names = paste(so_list[[i]]$orig.ident, colnames(so_list[[i]]), sep = "_"))
+  }
+}
+so_list[idx_exclude] <- NULL
+
+
 ### merge samples in each batch
-batch_vec <- paste0("batch", 1:9)
+batch_vec <- paste0("b", 1:9)
 treatment_vec <- c("EAE", "UT")
 mouse_vec <- c("m1", "m2")
 so_list_merged <- list()
@@ -84,5 +90,3 @@ so_integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT"
                                verbose = TRUE)
 
 saveRDS(so_integrated, file = paste0(dir_out, "so_integrated_SCTransformed.rds"))
-```
-
