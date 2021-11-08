@@ -36,7 +36,7 @@ tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL", "CNS", "DLN")
 treatment_vec <- c("UT", "EAE")
 ```
 
-After each round, Alex S. examines the clusters and make a list of clusters to remove.
+After each round, Alex S. examines the clusters and make a list of clusters to remove. Batch specific clusters were also identified and added to the list of clusters to remove.
 
 ```{r}
 clean_round = 0 # first round
@@ -59,6 +59,7 @@ if (clean_round != 0) { # not initial round; need to take out clusters
   saveRDS(colnames(so_integrated_all), file = paste0(dir_out, "keep_cell_names.rds"))
 } 
 
+batch_clusters <- list() ## batch driven clusters
 
 for (tissue in tissue_vec) {
   for (treatment in treatment_vec) {
@@ -154,7 +155,11 @@ for (tissue in tissue_vec) {
                                  only.pos = TRUE, min.pct = 0.25, max.cells.per.ident = 500,
                                  logfc.threshold = 0.25)
     saveRDS(so_markers, paste0(dir_out, sample_name, "/FILES/so_markers.rds"))
+    
+    ## Identify batch specific clusters
+    batch_clusters[[sample_name]] <- find_batch_cluster(so_integrated@meta.data)
   }
 }
-```
 
+saveRDS(batch_clusters, file = paste0(dir_out, "batch_specific_clusters.rds"))
+```

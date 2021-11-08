@@ -150,3 +150,43 @@ prep_data <- function(tissue, treatment, batch, mouse, project_name, dir_in){
   return(so_by_tissue)
 }
 
+
+####### Identify cluster(s) that are specific to one batch #########
+## Algorithm overview:
+# For each cluster, 
+# a. find the 2 batch with highest in cluster fraction (n in cluster / n in and not in)
+# b. Test if top 1 is significantly higher than top 2 with chi square 
+# c. If significant, check odds ratio. 
+#   i. OR > 2, mark as batch-specific
+#   ii. OR <= 2, not batch-specific
+# d. If not significant, not batch
+find_batch_cluster <- function(meta) {
+  bc <- c() ## batch clusters in current sample
+  bsize_all <- meta %>% group_by(batch) %>% tally()
+  
+  cluster_vec <- sort(unique(meta$seurat_clusters))
+  for (cl in cluster_vec) {
+    meta_sub <- meta[meta$seurat_clusters == cl,]
+    bsize_in <- meta_sub %>% group_by(batch) %>% tally()
+    
+    if (nrow(bsize_in) == 1) {
+      bc <- c(bc, cl) ## must be a batch specific cluster if only one batch found
+      next
+    }
+    
+    bsize_df <- merge(bsize_all, bsize_in, by = 1, all = TRUE)
+    bsize_df[is.na(bsize_df)] <- 0 ## replace NAs with 0s
+    bsize_df$n.z <- bsize_df$n.x - bsize_df$n.y
+    bfrac_in <- bsize_df$n.y/bsize_df$n.x
+    top_2 <- order(bfrac_in, decreasing = T)[1:2]
+    
+    t_out <- fisher.test(bsize_df[top_2, c("n.y", "n.z")]) # Fisher's exact test
+    if (t_out$p.value < 0.05 &  abs(log2(t_out$estimate)) > 2) bc <- c(bc, cl)
+  }
+  return(bc)
+}
+
+    
+
+
+
