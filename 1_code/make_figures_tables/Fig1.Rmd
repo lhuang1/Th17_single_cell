@@ -21,7 +21,6 @@ library(openxlsx)
 source(paste0(dir_proj, "1_code/utils.R"))
 
 #### configuration ####
-today <- Sys.Date()#"2021-01-05"
 clustering_date <- "2020-03-25"
 prep_type_date <- "dominant_TCR_2020-03-24"
 
@@ -67,7 +66,7 @@ p <- ggplot(meta, aes(x = UMAP_1, y = UMAP_2, color = tissue)) +
         axis.title = element_text(size = 15),
         axis.text = element_text(size = 12))
 p_legend <- get_legend(p)
-pdf(file = paste0(dir_out, "Fig1_D_UMAP_by_tissue_", today, ".pdf"), width = 7, height = 7)
+pdf(file = paste0(dir_out, "Fig1D.pdf"), width = 7, height = 7)
 p + theme(legend.position = "none")
 grid.arrange(p_legend)
 dev.off()
@@ -102,7 +101,7 @@ p2 <- ggplot(meta, aes(x = UMAP_1, y = UMAP_2, color = log_cpm)) +
         axis.title = element_text(size = 15),
         axis.text = element_blank(), axis.ticks = element_blank())
 
-pdf(file = paste0(dir_out, "Fig1_E_UMAP_by_Foxp3_Mki67_", today, ".pdf"), width = 4.5, height = 7)
+pdf(file = paste0(dir_out, "Fig1E.pdf"), width = 4.5, height = 7)
 grid.arrange(p1, p2, nrow = 2)
 dev.off()
 ```
@@ -112,7 +111,7 @@ dev.off()
 ## Figure 1F: Heatmap of tissue vs. SPL gene modules
 ```{r}
 date_de <- "2020-03-03"
-source(paste0(dir_proj, "1_code/make_figures/utils.R"))
+source(paste0(dir_proj, "1_code/make_figures_tables/utils.R"))
 tissue_vec <- c("MLN", "PP", "SI", "COL")
 
 ####### plot heatmap ##########
@@ -190,7 +189,6 @@ de_combn_vec_up <- sub("[0-9]+", "", names(genes_orderedrd_up))
 de_combn_vec_down <- sub("[0-9]+", "", names(genes_orderedrd_down))
 ng_vec <- c(sapply(unique(de_combn_vec_up), function(x){sum(de_combn_vec_up == x)}),
              sapply(unique(de_combn_vec_down), function(x){sum(de_combn_vec_down == x)})) %>% cumsum
-# ng_combn_vec <- ng_vec[c(1, 5, 11, 15, 16, 20, 25)]
 
 # save genes
 saveRDS(genes_orderedrd, paste0(dir_de, "module_genes_ordered.rds"))
@@ -234,8 +232,6 @@ ann_colors = list(
 names(ann_colors$tissue) <- levels(ann_col$tissue)
 names(ann_colors$DE_in) <- levels(ann_row$DE_in)
 
-
-
 lfc_mat_cap <- log2fc
 cap_val_high <- 2.5
 cap_val_low <- -2.5
@@ -259,12 +255,8 @@ p <- pheatmap(
   cluster_rows = F,
   cluster_cols = F,
   annotation_col = ann_col,
-  # annotation_row = ann_row,
-  # scale = "row",
   gaps_row = ng_vec,
-  # gaps_row = ng_combn_vec,
   annotation_colors = ann_colors,
-  # annotation_legend = T,
   fontsize_col = 6,
   breaks = color_breaks,
   color = my_palette,
@@ -272,19 +264,9 @@ p <- pheatmap(
   legend_labels = legend_labels,
   show_rownames = F
 )
-pdf(file = paste0(dir_out, "Fig1F_heatmap.pdf"),width = 4)
+pdf(file = paste0(dir_out, "Fig1F.pdf"),width = 4)
 grid.arrange(p$gtable)
 dev.off()
-
-pdata <- list(
-  ann_col = ann_col,
-  ann_row = ann_row,
-  ann_colors = ann_colors,
-  ng_vec = ng_vec,
-  color_breaks = color_breaks,
-  my_palette = my_palette
-)
-saveRDS(pdata, file = paste0(dir_out, "Fig1F_heatmap.rds"))
 ```
 
 
@@ -324,17 +306,14 @@ p <- plt_df %>%
   geom_point(aes(x = tissue, y = pathway_name, size = -log10(pvalue), fill = NES, color = fdr < 0.05), shape = 21) +
   labs(x = "", y = "", fill = "NES", size = "-log10(pvalue)", color = "FDR<0.05", title = "") +
   scale_size(range = c(0, 6), trans = scales::trans_new("square", function(x) x^2, "sqrt")) +
-  # scale_color_gradient2(low = "blue", mid = "white", high = "red", na.value = "grey60") +
   scale_fill_gradient(low = "white", high = "red", na.value = "grey70") +
   scale_color_manual(values = c("TRUE" = "black", "FALSE" = "grey70")) +
-  # scale_shape_manual(values = c("TRUE" = 21, "FALSE" = 21)) +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, color = (as.character(tissue_colors(tissue_vec)))),
-        # axis.text.y = element_text(hjust = -0.01, vjust = 0.5),
         legend.title = element_text(size = 8),
         legend.box = "vertical", legend.position="right", legend.key.size = unit(.13, "in")) 
 p
-pdf(paste0(dir_out, "Fig1G_enrichment_", today, ".pdf"), height = 4, width = 4)
+pdf(paste0(dir_out, "Fig1G.pdf"), height = 4, width = 4)
 p
 dev.off()
 ```
@@ -359,8 +338,6 @@ ave_expr = sapply(tissue_vec, function(x){
   rowMeans(exp_mtx[,so$tissue == x])
 }) %>% apply(., 1, scale) %>% t
 
-
-
 plt_df <- data.frame(expr = as.numeric(ave_expr), pct = 100 - as.numeric(pct_0), 
            tissue = rep(tissue_vec, each = length(glist)) %>% factor(., levels = rev(tissue_vec)),
            gene = rep(glist, length(tissue_vec)) %>% factor(., levels = rev(glist))) 
@@ -378,7 +355,7 @@ p <- ggplot(plt_df) +
          size = guide_legend(title = "Percent Cell\nDetected", title.vjust = .5, ))
 
 
-pdf(paste0(dir_out, "Fig1H_dotplot_", today, ".pdf"), height = 3, width = 7)
+pdf(paste0(dir_out, "Fig1H.pdf"), height = 3, width = 7)
 p
 dev.off()
 ```

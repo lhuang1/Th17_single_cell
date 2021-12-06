@@ -4,7 +4,7 @@ output: html_notebook
 ---
 
 ```{r}
-rm(list = setdiff(ls(), "so_all"))
+rm(list = ls())
 dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
 
 library(Seurat)
@@ -20,8 +20,6 @@ library(openxlsx)
 source(paste0(dir_proj, "1_code/utils.R"))
 
 #### configuration ####
-today <- Sys.Date()#"2020-12-20"
-
 dir_out <- paste0(dir_proj, "3_output/Figure_4/")
 if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 ```
@@ -29,11 +27,10 @@ if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 Load data.
 ```{r}
 prep_type_date <- "dominant_TCR_2020-03-24"
-# so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
 clustering_date <- "2020-04-16"
 meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/all_inter/", 
-                          clustering_date, "/FILES/meta_data.txt"), 
-                   header = T, sep = " ")
+                          clustering_date, "/FILES/meta_data.csv"), 
+                   header = T, row.names = 1, sep = ",")
 reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/all_inter/", clustering_date, "/FILES/reductions.rds"))
 stopifnot(all(rownames(meta) == colnames(so_all)))
 stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
@@ -60,23 +57,10 @@ p <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = tissue)) +
         axis.title = element_text(size = 15),
         axis.text = element_text(size = 12))
 p_legend <- get_legend(p)
-pdf(file = paste0(dir_out, "Fig4_A_UMAP_all_cell_by_tissue_", today, ".pdf"), width = 7, height = 7)
+pdf(file = paste0(dir_out, "Fig4A.pdf"), width = 7, height = 7)
 p + theme(legend.position = "none")
 grid.arrange(p_legend)
 dev.off()
-
-cairo_pdf(file = paste0(dir_out, "Fig4_A_UMAP_all_cell_by_tissue_", today, ".pdf"), width = 7, height = 7)
-p + theme(legend.position = "none")
-# grid.arrange(p_legend)
-dev.off()
-
-# svg(file = paste0(dir_out, "Fig4_A_UMAP_all_cell_by_tissue_", today, ".svg"), width = 7, height = 7)
-# p + theme(legend.position = "none")
-# # grid.arrange(p_legend)
-# dev.off()
-
-# library(tools)
-# compactPDF(dir_out, gs_quality = "printer")
 ```
 
 
@@ -107,7 +91,7 @@ p <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = treatment)) +
         axis.title = element_text(size = 15),
         axis.text = element_text(size = 12))
 p_legend <- get_legend(p)
-pdf(file = paste0(dir_out, "Fig4_B_UMAP_all_cell_by_treatment_", today, ".pdf"), width = 7, height = 7)
+pdf(file = paste0(dir_out, "Fig4B.pdf"), width = 7, height = 7)
 p + theme(legend.position = "none")
 grid.arrange(p_legend)
 dev.off()
@@ -147,7 +131,7 @@ p <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = treatment)) +
         axis.title = element_text(size = 15),
         axis.text = element_text(size = 12))
 p_legend <- get_legend(p)
-pdf(file = paste0(dir_out, "Fig4_C_UMAP_SPL_by_treatment_", today, ".pdf"), width = 7, height = 7)
+pdf(file = paste0(dir_out, "Fig4C.pdf"), width = 7, height = 7)
 p + theme(legend.position = "none")
 grid.arrange(p_legend)
 dev.off()
@@ -191,46 +175,14 @@ p <- ggplot(plt_df, aes(x = logCPM, y = logFC, color = up_in)) +
   theme(legend.position = "none")
 
 
-pdf(file = paste0(dir_out, "Fig4_D_MAplot_", today, ".pdf"), width = 5, height = 5)
+pdf(file = paste0(dir_out, "Fig4D.pdf"), width = 5, height = 5)
 p
 dev.off()
 
 ```
 
 
-
-
-
-## Figure 4E: Corrplot for TCR sharing across tissues
-```{r}
-date_analysis <- "2021-01-21"#"2020-12-10"
-bh_hc_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/bh_hclust_EAE_", date_analysis, ".rds"))
-bh_dist_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/bh_similarity_EAE_", date_analysis, ".rds"))
-
-library(corrplot)
-library(dendextend)
-
-pdf(file = paste0(dir_out, "Fig4_E_corrplot_clonal_similarity_", today, ".pdf"), width = 7, height = 7)
-layout(matrix(c(1, 1, 2, 2, 2, 2, 2, 2, 2, 2), nrow = 10, ncol = 1, byrow = TRUE))
-## dendrogram
-par(mar=c(0, 7, 2, 6.5))
-dend <- as.dendrogram(bh_hc_ls$pooled)
-dend %>% set("labels", "") %>% plot()
-## corrplot
-corrplot(bh_dist_ls$pooled,
-         is.corr = F,
-         type="upper", order="original", method = "circle",
-         outline = T,
-         col = rev(col_corr(200)),
-         mar = c(0, 0, 0, 0),
-         tl.col = tissue_colors(rownames(bh_dist_ls$pooled)),
-         tl.pos = 'td', tl.cex = 2,
-         diag = T, na.label = " ")
-dev.off()
-```
-
-
-## Figure 4F: Heatmap for TCR sharing across tissues
+## Figure 4E: Heatmap for TCR sharing across tissues
 ```{r}
 library(pheatmap)
 
@@ -250,7 +202,6 @@ p <- pheatmap(plt_mtx_scale_cap,
               clustering_method = "ward.D2",
               show_rownames = F, 
               color = rev(col_corr_pos_skip(100)),
-              # main = plt_title, 
               fontsize = 8,
               fontsize_col = 11,
               silent = T)
@@ -261,14 +212,37 @@ p$gtable$grobs[[which_col_names]]$hjust = 1
 p$gtable$grobs[[which_col_names]]$vjust = 1
 p$gtable$grobs[[which_col_names]]$gp$fontsize = 13
 
-saveRDS(p, file = paste0(dir_out, "Fig4_F_heatmap_clone_size_row_percentage_", today, ".rds"))
-
-pdf(file = paste0(dir_out, "Fig4_F_heatmap_clone_size_row_percentage_", today, ".pdf"), width = 4, height = 6)
+pdf(file = paste0(dir_out, "Fig4E.pdf"), width = 4, height = 6)
 grid.arrange(p$gtable)
 dev.off()
 ```
 
 
+## Figure 4F: Corrplot for TCR sharing across tissues (TRSS)
+```{r}
+date_analysis <- "2021-01-21"
+bh_hc_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/bh_hclust_EAE_", date_analysis, ".rds"))
+bh_dist_ls <- readRDS(paste0(dir_proj, "2_pipeline/TCR/compare_tissue/bh_similarity_EAE_", date_analysis, ".rds"))
 
+library(corrplot)
+library(dendextend)
 
+pdf(file = paste0(dir_out, "Fig4F.pdf"), width = 7, height = 7)
+layout(matrix(c(1, 1, 2, 2, 2, 2, 2, 2, 2, 2), nrow = 10, ncol = 1, byrow = TRUE))
+## dendrogram
+par(mar=c(0, 7, 2, 6.5))
+dend <- as.dendrogram(bh_hc_ls$pooled)
+dend %>% set("labels", "") %>% plot()
+## corrplot
+corrplot(bh_dist_ls$pooled,
+         is.corr = F,
+         type="upper", order="original", method = "circle",
+         outline = T,
+         col = rev(col_corr(200)),
+         mar = c(0, 0, 0, 0),
+         tl.col = tissue_colors(rownames(bh_dist_ls$pooled)),
+         tl.pos = 'td', tl.cex = 2,
+         diag = T, na.label = " ")
+dev.off()
+```
 

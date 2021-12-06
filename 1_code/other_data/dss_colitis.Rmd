@@ -95,3 +95,20 @@ for (trt in treatment_vec) {
 
 ```
 
+
+Remove contamination, Treg and proliferating clusters; re-run dimension reduction and clustering.
+Specifically, Cluster 8 is contamination (Cd74+), C4 is Treg and T7 is proliferating.
+```{r}
+trt <- "DSS"
+so <- readRDS(file = paste0(dir_colitis, "so_COL_", trt, "_sct.rds"))
+so <- so[, !(so$seurat_clusters %in% c(4, 7, 8))]
+so <- RunPCA(so)
+ElbowPlot(so, ndims = 50)
+so <- RunUMAP(so, reduction = "pca", dims = 1:30)
+
+so <- FindNeighbors(so, dims = 1:30)
+so <- FindClusters(so)
+markers <- FindAllMarkers(so)
+write.table(markers, file = paste0(dir_out, "cluster_markers_DSS.csv"), sep = ",", row.names = F)
+saveRDS(so, file = paste0(dir_out, "so_COL_", trt, "_cleaned.rds"))
+```

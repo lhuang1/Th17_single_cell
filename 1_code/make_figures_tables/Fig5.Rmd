@@ -20,7 +20,6 @@ library(openxlsx)
 source(paste0(dir_proj, "1_code/utils.R"))
 
 #### configuration ####
-today <- Sys.Date() #"2020-12-16"
 clustering_date <- "2020-03-25"
 prep_type_date <- "dominant_TCR_2020-03-24"
 
@@ -30,10 +29,10 @@ if(!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 
 Load data.
 ```{r}
-# so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
+so_all <- readRDS(paste0(dir_proj, "2_pipeline/preprocessing/so_processed_", prep_type_date, ".rds"))
 meta <- read.table(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", 
-                          clustering_date, "/FILES/meta_data_switched.txt"), 
-                   header = T, sep = " ")
+                          clustering_date, "/FILES/meta_data.csv"), 
+                   header = T, row.names = 1, sep = ",")
 reductions <- readRDS(paste0(dir_proj, "2_pipeline/clustering/EAE_GFPall_SPL/", clustering_date, "/FILES/reductions.rds"))
 stopifnot(all(rownames(meta) == rownames(reductions$umap@cell.embeddings)))
 
@@ -60,7 +59,7 @@ p <- ggplot(plt_df, aes(x = UMAP_1, y = UMAP_2, color = factor(cluster))) +
         axis.title = element_text(size = 15),
         axis.text = element_text(size = 12))
 p_legend <- get_legend(p)
-pdf(file = paste0(dir_out, "Fig5_A_UMAP_SPL_EAE_clusters_", today, ".pdf"), width = 7, height = 7)
+pdf(file = paste0(dir_out, "Fig5A.pdf"), width = 7, height = 7)
 p + theme(legend.position = "none")
 grid.arrange(p_legend)
 dev.off()
@@ -101,14 +100,13 @@ p <- pheatmap(expr_mat_z,
          color = my_palette,
          breaks = my_breaks,
          cutree_rows = 2,
-         # gaps_col = sum(in_spl_0),
          annotation_col = ann_col,
          annotation_colors = ann_colors,
          show_rownames = T,
          show_colnames = F,
          main = "")
 
-pdf(paste0(dir_out, "Fig5_B_heatmap_genes_", today, ".pdf"), width = 6, height = 3)
+pdf(paste0(dir_out, "Fig5B.pdf"), width = 6, height = 3)
 grid.arrange(p$gtable)
 dev.off()
 ```
@@ -146,7 +144,7 @@ p <- gsea %>% filter(pathway %in% names(sigs_to_plot)) %>%
         axis.title = element_text(size = 12),
         axis.text = element_text(size = 12, color = "black"))
 p
-pdf(paste0(dir_out, "Fig5_C_barplot_enrichment_", today, ".pdf"), width = 6, height = 5)
+pdf(paste0(dir_out, "Fig5C.pdf"), width = 6, height = 5)
 print(p)
 dev.off()
 ```
@@ -209,7 +207,7 @@ for (i in stripr) {
 
 grid.arrange(g)
 
-pdf(paste(dir_out, "Fig5_D_pie_clonal_expansion_", today, ".pdf"), width = 4, height = 5)
+pdf(paste(dir_out, "Fig5D.pdf"), width = 4, height = 5)
 grid.arrange(g, newpage = T)
 dev.off()
 
@@ -255,30 +253,6 @@ thresh_fdr <- 0.05
 spl_colors <- SPL_EAE_cluster_0_1_colors()
 spl_colors <- c(spl_colors, "None" = "#000000")
 
-# df <- de_res$table %>% 
-#   rownames_to_column(var = "gene") %>%
-#   mutate(up_in = ifelse(logFC > thresh_log2fc & FDR < thresh_fdr, "SPL_0", ifelse(logFC < -thresh_log2fc & FDR < thresh_fdr, "SPL_1", "None"))) %>% ## + logFC means up in Cxcr6+ cells
-#   mutate(up_in = ifelse(grepl("Rps", gene) | grepl("Rpl", gene), NA, up_in)) %>% 
-#   mutate(rank_pval_up = rank(ifelse(up_in == "SPL_1", PValue, NA)), rank_pval_down = rank(ifelse(up_in == "SPL_0", PValue, NA)))
-# 
-# p <- df %>% 
-#   mutate(label = ifelse(gene %in% glist, gene, NA)) %>%
-#   mutate(PValue = ifelse(PValue == 0, 10e-324, PValue)) %>% 
-#   ggplot(aes(x = -logFC, y = -log10(PValue), color = up_in)) +
-#   geom_point() +
-#   geom_label_repel(aes(label = label), show.legend = F, min.segment.length = 0) +
-#   scale_color_manual(values = spl_colors, na.translate = F) +
-#   labs(x = expression(log[2]~Fold~Change~SPL_1~vs.~SPL_0), y = expression(-log[10](PValue)), color = "") +
-#   ylim(0, 350) +
-#   theme_bw() +
-#   theme(axis.text = element_text(size = 12, color = "black"),
-#         axis.title = element_text(size = 15, color = "black"))
-# p
-# 
-# pdf(paste0(dir_out, "Fig5_E_volcano_", today, ".pdf"), width = 7, height = 5)
-# p + theme(legend.position = "none")
-# dev.off()
-
 de_up <- rownames(de_res$table)[de_res$table$logFC > thresh_log2fc & de_res$table$FDR < thresh_fdr]
 de_down <- rownames(de_res$table)[de_res$table$logFC < -thresh_log2fc & de_res$table$FDR < thresh_fdr]
 deg <- c(de_up, de_down)
@@ -304,7 +278,7 @@ p <- ggplot(plt_df, aes(x = logCPM, y = logFC, color = up_in)) +
   theme(legend.position = "none")
 
 p
-pdf(file = paste0(dir_out, "Fig5_E_MAplot_", today, ".pdf"), width = 7, height = 5)
+pdf(file = paste0(dir_out, "Fig5E.pdf"), width = 7, height = 5)
 p
 dev.off()
 ```
@@ -327,10 +301,7 @@ for (i in names(sigs)) {
   plt_df <- data.frame(so@reductions$umap@cell.embeddings)
   plt_df$expr <- NA
   plt_df$expr[in_spl_0_1] <- so@meta.data[in_spl_0_1,i]
-  
-  # max_cutoff <- quantile(plt_df$expr[plt_df$expr > 0], 0.95, na.rm = T)
-  # min_cutoff <- quantile(plt_df$expr[plt_df$expr > 0], 0.05, na.rm = T)
-  # min_cutoff <- 0
+
   max_cutoff <- quantile(plt_df$expr, 0.95, na.rm = T)
   min_cutoff <- quantile(plt_df$expr, 0.05, na.rm = T)
   plt_df$expr_cap <- plt_df$expr %>% pmin(., max_cutoff) %>% pmax(., min_cutoff)
@@ -346,20 +317,11 @@ for (i in names(sigs)) {
           axis.text = element_blank(), axis.ticks = element_blank())
 }
 
-
-
-
-pdf(file = paste0(dir_out, "Fig5_F_UMAP_bulk_signature_", today, ".pdf"), width = 4, height = 8)
+pdf(file = paste0(dir_out, "Fig5F.pdf"), width = 4, height = 8)
 grid.arrange(grobs = plist, nrow = 2)
 dev.off()
 ```
 
-
-
-## Figure 5G: flow plots from Alex
-
-
-
-## Figure 5H, I, J: see ATAC-seq analysis
+## Figure I, J: see ../atac/SLAMF6_vs_CXCR6.Rmd
 
 
