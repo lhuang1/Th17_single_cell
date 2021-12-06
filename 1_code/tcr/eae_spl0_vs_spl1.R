@@ -1,21 +1,17 @@
-rm(list = setdiff(ls(), "so_all"))
+#### TCR sharing between SPL0 and SPL1
+rm(list = ls())
 
 setwd("/singerlab/linglin/Th17_single_cell_eae_ut")
-library(Seurat)
 library(dplyr)
 library(tibble)
 library(tidyr)
-set.seed(1)
-source("1_code/utils.R")
-source("1_code/tcr/utils.R")
 
 #### configuration ####
 cargs <- commandArgs(trailingOnly = TRUE)
 if (length(cargs) == 0) {
-  today <- "2020-11-04"
+  today <- Sys.Date()
   clustering_date <- "2020-03-25"
   clonotyping_type_date <- "dominant_2020-04-02"
-  prep_type_date <- "dominant_TCR_2020-03-24"
 } else {
   today <- cargs[1]
   clustering_date <- cargs[2]

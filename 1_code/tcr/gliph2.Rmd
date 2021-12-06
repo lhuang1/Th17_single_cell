@@ -1,0 +1,123 @@
+---
+title: "TCR analysis"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(tibble)
+dir_out <- "../../2_pipeline/TCR/gliph/"
+if (!dir.exists(dir_out)) {
+  dir.create(dir_out)
+}
+
+today <- Sys.Date()
+tissue_vec_ut <- c("SPL", "MLN", "PP", "SI", "COL")
+tissue_vec_eae <- c("SPL", "MLN", "PP", "SI", "COL", "CNS", "DLN")
+```
+
+
+## GLIPH analysis to identify clusters of TCRs
+
+### Prepare input for GLIPH2.
+
+Input format: (http://50.255.35.37:8080/demo)
+CDR3b  TRBV  TRBJ  CDR3a  subject:condition count
+CSARDQGGAGNQPQHF	TRBV20-1	TRBJ1-5	CAVGVGYKLSF	01/0906:MtbLys	1
+All fields are tab-delimited except that subject and condition are delimited with ":". Condition can be anything such as tissue type, cell subset or treatment et al. CDR3b, TRBV, subject, and count are required. Other fields can be replaced with "NA". A demo input TCR dataset can be found at the link TCR
+
+Pool data from all mice and run at once.
+```{r}
+meta <- readRDS("../../for_paper/results/preprocessing/meta_processed_dominant_TCR_2020-03-24.rds")
+cell_name_meta <- sub(".*?_", "", rownames(meta))
+
+dir_tcr <- "../../2_pipeline/preprocessing/tcr/2020-03-24/"
+file_vec <- list.files(dir_tcr, pattern = "*filtered_contigs_dominant.rds")
+input_table <- list()
+two_beta <- list()
+for (file_name in file_vec) {
+  cat(file_name, "\n")
+  tmp <- strsplit(file_name, split = "_") %>% unlist
+  treatment <- tmp[1]; batch <- tmp[2]; mouse <- tmp[3]
+  filtered_contigs <- readRDS(paste0(dir_tcr, file_name))
+  filtered_contigs$cell_name <- paste0(treatment, "_", batch, "_", mouse, "_", sub("-.*", "", as.character(filtered_contigs$barcode)))
+  filtered_contigs_wide <- filtered_contigs %>% 
+    arrange(-umis) %>% 
+    group_by(cell_name) %>% 
+    summarise(CDR3b = paste(as.character(cdr3[chain == "TRB"]), collapse = ":"),
+              TRBV = paste(as.character(v_gene[chain == "TRB"]), collapse = ":"),
+              TRBJ = paste(as.character(j_gene[chain == "TRB"]), collapse = ":"),
+              CDR3a = as.character(cdr3[chain == "TRA"][1])) %>%  # take the first one since GLIPH only uses beta chain.
+    mutate(CDR3a = ifelse(is.na(CDR3a), "NA", CDR3a))
+  
+  idx_two_beta <- grep(":", filtered_contigs_wide$CDR3b)
+  tmp <- filtered_contigs_wide[idx_two_beta,]
+  two_beta[[file_name]] <- tmp
+  filtered_contigs_wide[idx_two_beta,] <- tmp %>% mutate(CDR3b = sub(":.*", "", CDR3b),
+                                                         TRBV = sub(":.*", "", TRBV),
+                                                         TRBJ = sub(":.*", "", TRBJ))
+  filtered_contigs_wide <- rbind(filtered_contigs_wide, 
+                                 tmp %>% mutate(CDR3b = sub(".*:", "", CDR3b),
+                                                TRBV = sub(".*:", "", TRBV),
+                                                TRBJ = sub(".*:", "", TRBJ),
+                                                cell_name = paste0(cell_name, ".2")))
+  
+  ## subject:condition
+  filtered_contigs_wide$tissue = meta$tissue[match(sub(".2", "", filtered_contigs_wide$cell_name), cell_name_meta)]
+  filtered_contigs_wide$subject_cond <- paste0(paste(batch, treatment, mouse, sep = "_"), ":", filtered_contigs_wide$tissue)
+  input_table[[file_name]] <- filtered_contigs_wide %>% group_by(CDR3b, TRBV, TRBJ, CDR3a, subject_cond) %>% tally(name = "count")
+}
+
+input_table_df <- Reduce(rbind, input_table)
+write.table(input_table_df, file = paste0(dir_out, "gliph_input_tcr.txt"), sep = "\t", quote = F, col.names = F, row.names = F)
+# only UT, valid and invalid tissue labels
+input_table_df_ut <- input_table_df %>% filter(grepl("UT", subject_cond))
+write.table(input_table_df_ut, file = paste0(dir_out, "gliph_input_tcr_ut.txt"), sep = "\t", quote = F, col.names = F, row.names = F)
+
+# only EAE, valid and invalid tissue labels
+input_table_df_eae <- input_table_df %>% filter(grepl("EAE", subject_cond))
+write.table(input_table_df_eae, file = paste0(dir_out, "gliph_input_tcr_eae.txt"), sep = "\t", quote = F, col.names = F, row.names = F)
+
+
+# only UT, valid tissue labels
+input_table_df_ut <- input_table_df %>% filter(grepl("UT", subject_cond), !grepl("NA", subject_cond))
+write.table(input_table_df_ut, file = paste0(dir_out, "gliph_input_tcr_ut_valid.txt"), sep = "\t", quote = F, col.names = F, row.names = F)
+
+# only EAE, valid tissue labels
+input_table_df_eae <- input_table_df %>% filter(grepl("EAE", subject_cond), !grepl("NA", subject_cond))
+write.table(input_table_df_eae, file = paste0(dir_out, "gliph_input_tcr_eae_valid.txt"), sep = "\t", quote = F, col.names = F, row.names = F)
+
+saveRDS(two_beta, file = paste0(dir_out, "cells_two_beta.rds"))
+```
+
+
+Run GLIPH. (make sure to change date ../../2_pipeline/TCR/gliph/parameter_table)
+
+```{r}
+parameter_table <- c(
+  paste0("out_prefix=", today, "_ut"), # date and treatment
+  "cdr3_file=/singerlab/linglin/Th17_single_cell_eae_ut/2_pipeline/TCR/gliph/gliph_input_tcr_ut.txt", # treatment
+  "refer_file=/homes10/lhuang/utils/gliph2/mouse_v1.0/ref_CD4_ms.txt",
+  "v_usage_freq_file=/homes10/lhuang/utils/gliph2/mouse_v1.0/ref_V_CD4_ms.txt",
+  "cdr3_length_freq_file=/homes10/lhuang/utils/gliph2/mouse_v1.0/ref_L_CD4_ms.txt",
+  "local_min_pvalue=0.001",
+  "p_depth = 1000",
+  "global_convergence_cutoff = 1",
+  "simulation_depth=1000",
+  "kmer_min_depth=3",
+  "local_min_OVE=10",
+  "algorithm=GLIPH2",
+  "all_aa_interchangeable=1"
+)
+write.table(parameter_table, file = paste0(dir_out, "parameter_table_", today, ".txt"), sep = "\n", quote = F, col.names = F, row.names = F)
+```
+
+
+```{bash, eval = F}
+cd /homes10/lhuang/utils/gliph2/
+./irtools.centos -c /singerlab/linglin/Th17_single_cell_eae_ut/2_pipeline/TCR/gliph/parameter_table_2021-09-22.txt
+cp 2021-09-22_ut* /singerlab/linglin/Th17_single_cell_eae_ut/2_pipeline/TCR/gliph/
+```
+
+
