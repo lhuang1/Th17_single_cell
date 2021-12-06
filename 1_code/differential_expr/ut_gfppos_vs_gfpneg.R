@@ -29,8 +29,8 @@ if (!dir.exists(dir_out)) {
 
 ### load data
 so_all <- readRDS(paste0("2_pipeline/preprocessing/so_processed_dominant_TCR_", prep_date, ".rds"))
-## use clsuter annotation to filter out non-conventional Th17 cells (Treg-like and proliferating clusters)
-cluster_ann <- read.xlsx(paste0("2_pipeline/clustering/UT_GFPall_intra/2020-03-25/cluster_annotation.xlsx"), sheet = "processed")
+## use cluster annotation to filter out non-conventional Th17 cells (Treg-like and proliferating clusters)
+cluster_ann <- read.xlsx(paste0("2_pipeline/clustering/UT_GFPall_intra/", cluster_date, "/cluster_annotation.xlsx"), sheet = "processed")
 cluster_ann$tissue <- sub("_.*", "", cluster_ann$Cluster)
 cluster_ann_conv <- cluster_ann %>% filter(!(Annotation %in% c("Proliferating", "Treg-like")))
 
