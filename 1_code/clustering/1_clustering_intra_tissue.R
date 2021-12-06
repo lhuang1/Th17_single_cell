@@ -64,12 +64,12 @@ for (tissue in tissue_vec) {
   # clustering
   so <- FindNeighbors(object = so, dims = param_ls$PC_dims)
   so <- FindClusters(object = so, resolution = param_ls$cluster_res)
-  write.table(so@meta.data, file = paste0(dir_out, "/FILES/meta_data.csv"), sep = ",")
+  write.csv(so@meta.data, file = paste0(dir_out, "/FILES/meta_data.csv"))
   
   # UMAP
   so <- RunUMAP(object = so, verbose = TRUE, 
                 dims = param_ls$PC_dims, n.neighbors = param_ls$UMAP_nneighbors, min.dist = param_ls$UMAP_mindist) 
-  write.table(Embeddings(so, reduction = "umap"), file = paste0(dir_out, "/FILES/coords_umap.txt"), quote = F)
+  write.csv(Embeddings(so, reduction = "umap"), file = paste0(dir_out, "/FILES/coords_umap.csv"), quote = F)
   
   # overview and cluster compositions (pie chart)
   pt.size <- 0.5
