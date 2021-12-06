@@ -1,0 +1,338 @@
+---
+title: "Il23r KO Bulk RNA-Seq Data"
+output: html_notebook
+---
+
+```{r}
+rm(list = ls())
+dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut/"
+
+today <- Sys.Date()
+dir_out <- paste0(dir_proj, "2_pipeline/Il23rko/")
+if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
+
+library(edgeR)
+library(dplyr)
+library(tidyr)
+library(openxlsx)
+library(tibble)
+library(ggplot2)
+library(stringr)
+library(SummarizedExperiment)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggsignif)
+library(gridExtra)
+library(ggrepel)
+```
+
+## Preprocessing
+```{r}
+#### load data
+tpm1 <- read.table(gzfile(paste0(dir_proj, "0_data/counts/bulk/Il23rko/P1.dge.txt.gz")), header = T, row.names = 1)
+tpm2 <- read.table(gzfile(paste0(dir_proj, "0_data/counts/bulk/Il23rko/P2.dge.txt.gz")), header = T, row.names = 1)
+sample_info <- read.csv(paste0(dir_proj, "0_data/counts/bulk/Il23rko/well_sample_mapping.csv"), header = T)
+stat1 <- read.table(paste0(dir_proj, "0_data/counts/bulk/Il23rko/P1.qc.stat.tsv"), sep = "\t", header = T)
+stat2 <- read.table(paste0(dir_proj, "0_data/counts/bulk/Il23rko/P2.qc.stat.tsv"), sep = "\t", header = T)
+
+#### preprocess data
+## combine two parts
+tpm_mtx_raw <- cbind(tpm1, tpm2) 
+## sum up reads from same well but sequenced in different lanes
+tpm_well_id <- sub("\\..*", "", colnames(tpm_mtx_raw))
+well_id_vec <- tpm_well_id %>% unique()
+tpm_mtx <- sapply(well_id_vec, function(x) {
+  rowSums(tpm_mtx_raw[,tpm_well_id == x])
+})
+
+## parse sample_info 
+# match well ID format with TPM column names
+sample_info$well_parsed <- strsplit(as.character(sample_info$well), split = "") %>% 
+  sapply(., function(x) {if(length(x) == 2) {paste(x, collapse = "0")} else {paste(x, collapse = "")}})
+rownames(sample_info) <- sample_info$well_parsed
+# parse other info
+sample_info$population <- sub("in vivo", "in_vivo", sample_info$population)
+sample_info$cell_type <- sub("\ .*", "", sample_info$population) %>% toupper() %>% paste0(., "+") %>% factor(., levels = c("SLAMF6+", "CXCR6+"))
+sample_info$mouse_id <- sub(".*\ ", "", sample_info$population) 
+sample_info$condition <- factor(sample_info$condition, levels = c("wt", "ko"))
+sample_info$low_quality <- sample_info$experiment == "As295" & sample_info$mouse_id %in% c("1", "4")
+
+## remove samples with low quality or from irrelavent experiments
+sample_info <- sample_info[(!sample_info$low_quality) & (sample_info$experiment %in% c("As295", "As308")),]
+# check sample quality based on mapping QC stats
+qc_stat <- rbind(stat1, stat2) %>% arrange(Total.reads)
+qc_stat$Alignment.rate <- as.numeric(gsub("%", "", qc_stat$Alignment.rate, fixed = T))
+qc_stat$Unique.rate <- as.numeric(gsub("%", "", qc_stat$Unique.rate, fixed = T))
+qc_stat_reduced <- qc_stat %>% 
+  filter(Cell %in% sample_info$well_parsed) %>% 
+  group_by(Cell) %>% 
+  summarise(Alignment.rate = sum(Total.reads * Alignment.rate) / sum(Total.reads),
+            Unique.rate = sum(Total.reads * Unique.rate) / sum(Total.reads),
+            Total.reads = mean(Total.reads))
+pdf(file = paste0(dir_out, "sample_quality_", today, ".pdf"))
+ggplot(qc_stat_reduced, aes(x = Total.reads, y = Alignment.rate, label = Cell)) +
+  geom_point() +
+  geom_text() +
+  scale_x_log10() +
+  theme_bw()
+dev.off()
+# bad sample was F12
+sample_info <- sample_info[-which(sample_info$well_parsed == "F12"),]
+
+tpm_mtx <- tpm_mtx[,rownames(sample_info)]
+
+## remove genes undetected
+tpm_mtx <- tpm_mtx[rowSums(tpm_mtx) > 0,]
+
+## create dge object
+# dge_full <- DGEList(counts = tpm_mtx, samples = sample_info)
+# saveRDS(dge_full, file = paste0(dir_out, "dge_full_", today, ".rds"))
+dds <- DESeqDataSetFromMatrix(countData = tpm_mtx, colData = sample_info, design = ~ condition + cell_type +experiment)
+saveRDS(dds, file = paste0(dir_out, "dds_", today, ".rds"))
+
+rm(tpm1, tpm2, tpm_mtx_raw, tpm_mtx, sample_info, stat1, stat2, qc_stat, qc_stat_reduced)
+```
+
+## Sanity check. Il23r and other genes.
+```{r}
+dds_295 <- dds[,dds$experiment == "As295"]; dds_295 <- dds_295[rowSums(assay(dds_295)) > 0,]
+dds_308 <- dds[,dds$experiment == "As308"]; dds_308 <- dds_308[rowSums(assay(dds_308)) > 0,]
+## scale data
+vsd <- vst(dds)
+vsd_295 <- vst(dds_295)
+vsd_308 <- vst(dds_308)
+
+
+plist <- list()
+## Il23r raw counts
+plt_df <- data.frame(
+  t(assay(dds)[c("Il23r", "Il17a", "Slamf6", "Cxcr6"),]),
+  condition = dds$condition,
+  cell_type = dds$cell_type
+) %>% gather(key = gene, value = count, -c("condition", "cell_type"))
+plist$Il23r_1 <- ggplot(plt_df, aes(x = gene, y = count, fill = condition)) +
+  geom_boxplot() +
+  labs(x = "", y = "", fill = "") +
+  theme_bw()
+plist$Il23r_2 <- ggplot(plt_df[plt_df$gene %in% c("Il23r", "Il17a"),], aes(x = gene, y = count, fill = condition)) +
+  geom_boxplot() +
+  labs(x = "", y = "", fill = "") +
+  theme_bw()
+plist$Il23r_3 <- ggplot(plt_df[plt_df$gene %in% c("Il23r"),], aes(x = cell_type, y = count, fill = condition)) +
+  geom_boxplot() +
+  labs(x = "", y = "", fill = "") +
+  theme_bw()
+
+
+cmtx <- assay(dds) %>% apply(., 2, function(x){x / sum(x)})
+plt_df <- data.frame(
+  t(cmtx[c("Il23r", "Ifngr1", "Il17a", "Slamf6", "Cxcr6"),]) * median(colSums(assay(dds))),
+  condition = dds$condition,
+  cell_type = dds$cell_type,
+  experiment = dds$experiment
+) %>% gather(key = gene, value = count, -c("condition", "cell_type", "experiment"))
+plist$Il23r_4 <-
+  ggplot(plt_df, aes(x = interaction(condition, cell_type), y = count, fill = experiment)) +
+  geom_boxplot(aes(color = condition), outlier.shape = NA) +
+  geom_jitter(aes(color = condition), width = 0.2) +
+  facet_wrap(~gene, scales = "free_y", nrow = 1) +
+  scale_color_manual(values = c("wt" = "black", "ko" = "red")) +
+  scale_fill_manual(values = c("As295" = "white", "As308" = "grey70")) +
+  labs(x = "", y = "", fill = "", title = "Scaled Counts") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## genes of interest
+expr <- assay(vsd)[c("Il23r", "Il17a", "Il17f", "Rorc", "Slamf6", "Cxcr6", "Ifng", "Il2", "Csf2", "Ifngr1"),] %>% t %>% scale() %>% t
+ann_col <- colData(vsd)[,c("experiment", "condition", "cell_type")] %>% data.frame()
+ann_colors <- list(cell_type = c("CXCR6+" = "#DC143C", "SLAMF6+" = "#1E90FF"),
+                   experiment = brewer.pal(3, "Dark2")[1:2] %>% `names<-`(., c("As295", "As308")),
+                   condition = brewer.pal(3, "Set3")[1:2] %>% `names<-`(., c("wt", "ko")))
+p <- pheatmap(expr,
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         breaks = seq(-2, 2, length.out = 101),
+         annotation_col = ann_col,
+         annotation_colors = ann_colors)
+
+pdf(file = paste0(dir_out, "check_il23r_", today, ".pdf"), width = 7, height = 4)
+plist
+grid.arrange(p$gtable)
+dev.off()
+```
+
+
+
+## PCA to check batch effect
+```{r}
+plt_pc <- function(PC_x, PC_y, pca, vsd, percentVar, show_id = FALSE) {
+  plt_df <- data.frame(PC_horiz = pca$x[, PC_x],
+                       PC_vert = pca$x[, PC_y],
+                       colData(vsd))
+  p <- ggplot(data = plt_df, aes(x = PC_horiz, y = PC_vert, color = cell_type, shape = experiment, alpha = condition)) + 
+    geom_point(size = 3) + 
+    scale_shape_manual(name = "Batch", values = c("As295" = 19, "As308" = 17)) +
+    scale_color_manual(name = "Population", values = c("CXCR6+" = "#DC143C", "SLAMF6+" = "#1E90FF")) +
+    scale_alpha_manual(name = "Condition", values = c("wt" = 1, "ko" = 0.3)) +
+    labs(x = paste0(PC_x, " (", round(percentVar[PC_x]), "% variance)"),
+         y = paste0(PC_y, " (", round(percentVar[PC_y]), "% variance)")) + 
+    scale_x_continuous(expand = c(0, 0.4 * max(abs(plt_df$PC_horiz)))) +
+    theme_bw()
+  if (show_id) {
+    p <- p + geom_text(aes(label = population), size = 3, color = "black", hjust = -0.3, vjust = 0.3)
+  }
+  p
+}
+
+
+plt_pc_one_cell_type <- function(PC_x, PC_y, pca, vsd, percentVar, show_id = FALSE) {
+  plt_df <- data.frame(PC_horiz = pca$x[, PC_x],
+                       PC_vert = pca$x[, PC_y],
+                       colData(vsd))
+  p <- ggplot(data = plt_df, aes(x = PC_horiz, y = PC_vert, color = toupper(condition))) + 
+    geom_point(size = 3) + 
+    scale_color_manual(name = "Condition", values = c("KO" = rgb(76, 169, 95, maxColorValue = 255), 
+                                                      "WT" = rgb(88, 89, 91, maxColorValue = 255))) +
+    labs(x = paste0(PC_x, " (", round(percentVar[PC_x]), "% variance)"),
+         y = paste0(PC_y, " (", round(percentVar[PC_y]), "% variance)")) + 
+    scale_x_continuous(expand = c(0.1, 0.1)) +
+    scale_y_continuous(expand = c(0.1, 0.1)) +
+    theme_bw()
+  if (show_id) {
+    p <- p + ggrepel::geom_label_repel(aes(label = population), size = 3, color = "black")
+  }
+  p
+}
+```
+
+## Only use experiment 308
+```{r}
+dds_308 <- dds[,dds$experiment == "As308"]; dds_308 <- dds_308[rowSums(assay(dds_308)) > 0,]
+## scale data
+vsd_308 <- vst(dds_308)
+rv <- rowVars(assay(vsd_308))
+select <- order(rv, decreasing=TRUE)[seq_len(min(1000, length(rv)))]
+pca_308 <- prcomp(t(assay(vsd_308)[select,]))
+percentVar_308 <- 100 * (pca_308$sdev ^ 2) / sum(pca_308$sdev ^ 2); names(percentVar_308) <- colnames(pca_308$x)
+pdf(file = paste0(dir_out, "PCA_As308_", today, ".pdf"), width = 5, height = 3.5)
+plot(percentVar_308)
+plt_pc("PC1", "PC2", pca = pca_308, vsd = vsd_308, percentVar = percentVar_308, show_id = T)
+plt_pc("PC3", "PC4", pca = pca_308, vsd = vsd_308, percentVar = percentVar_308, show_id = T)
+plt_pc("PC5", "PC6", pca = pca_308, vsd = vsd_308, percentVar = percentVar_308, show_id = T) 
+plt_pc("PC7", "PC8", pca = pca_308, vsd = vsd_308, percentVar = percentVar_308, show_id = T) 
+plt_pc("PC9", "PC10", pca = pca_308, vsd = vsd_308, percentVar = percentVar_308, show_id = T) 
+dev.off()
+
+cell_type_vec <- c("SLAMF6+", "CXCR6+")
+for (cell_type in cell_type_vec) {
+  vsd_308_sub <- vst(dds_308[,dds_308$cell_type == cell_type])
+  rv <- rowVars(assay(vsd_308_sub))
+  select <- order(rv, decreasing=TRUE)[seq_len(min(1000, length(rv)))]
+  pca_308 <- prcomp(t(assay(vsd_308_sub)[select,]))
+  percentVar_308 <- 100 * (pca_308$sdev ^ 2) / sum(pca_308$sdev ^ 2); names(percentVar_308) <- colnames(pca_308$x)
+  pdf(file = paste0(dir_out, "PCA_As308_", cell_type, "_", today, ".pdf"), width = 5, height = 3)
+  plot(percentVar_308)
+  p <- plt_pc_one_cell_type("PC1", "PC2", pca = pca_308, vsd = vsd_308_sub, percentVar = percentVar_308, show_id = F)
+  print(p)
+  p <- plt_pc_one_cell_type("PC3", "PC4", pca = pca_308, vsd = vsd_308_sub, percentVar = percentVar_308, show_id = F)
+  print(p)
+  p <- plt_pc_one_cell_type("PC5", "PC6", pca = pca_308, vsd = vsd_308_sub, percentVar = percentVar_308, show_id = F) 
+  print(p)
+  dev.off()
+}
+```
+
+DE analysis
+```{r}
+protein_coding_only <- TRUE
+thresh_padj <- 0.05
+
+if (protein_coding_only) {
+  gene_info <- readRDS("/singerlab/linglin/PG1/0_data/gene_info.rds")
+  protein_coding_genes <- gene_info$SYMBOL[gene_info$TYPE == "protein_coding"] %>% toupper()
+  print(dim(dds))
+  dds <- dds[toupper(rownames(dds)) %in% protein_coding_genes,]
+  print(dim(dds))
+}
+
+experiment_vec <- c("As308_only")
+cell_type_vec <- c("CXCR6+", "SLAMF6+")
+for (e in experiment_vec) {
+  if (e == "As295_and_As308") {
+    object <- dds
+    object@design <- ~ condition + experiment
+  } else if (e == "As295_only") {
+    object <- dds_295
+    object@design <- ~ condition
+  } else if (e == "As308_only") {
+    object <- dds_308
+    object@design <- ~ condition
+  }
+  for (cell_type in cell_type_vec) {
+    cat(e, cell_type, "\n")
+    dds_sub <- object[,object$cell_type == cell_type]
+    keep <- rowSums(counts(dds_sub)) >= 10
+    dds_sub <- dds_sub[keep,]
+    dds_sub$condition <- factor(dds_sub$condition, levels = c("wt", "ko")) %>% droplevels()
+    ## edgeR
+    dge <- DGEList(counts = counts(dds_sub), samples = colData(dds_sub))
+    dge <- calcNormFactors(dge)
+    dge$samples$condition <- factor(dge$samples$condition, levels = c("wt", "ko"))
+    if (e == "As295_and_As308") {
+      design <- model.matrix(~ condition + experiment, data = dge$samples)
+    } else {
+      design <- model.matrix(~ condition, data = dge$samples)
+    }
+    dge <- estimateDisp(dge, design = design)
+    fit <- glmFit(dge, design = design)
+    lrt <- glmLRT(fit, coef = 2)
+    res_edger <- topTags(lrt, n = Inf, adjust.method = "BH", sort.by = "none", p.value = 1)
+    saveRDS(res_edger, file = paste0(dir_out, "de_edger_", cell_type, "_", e, "_", today, ".rds"))
+    write.csv(res_edger$table, file = paste0(dir_out, "all_genes_edger_", cell_type, "_", e, "_", today, ".csv"), row.names = T)
+    deg_edger <- res_edger$table %>% rownames_to_column(var = "gene") %>% 
+      filter(FDR < thresh_padj) %>% arrange(-logFC)
+    write.csv(deg_edger, file = paste0(dir_out, "deg_edger_", cell_type, "_", e, "_", today, ".csv"), row.names = T)
+  }
+}
+```
+
+
+
+
+## GSEA
+```{r}
+cell_type_vec <- c("SLAMF6+", "CXCR6+")
+
+library(fgsea)
+source("../enrichment/utils.R")
+sigs_raw_gaublomme <- read.table("../../0_data/gene_lists/all_Gaublomme_2016_signatures.pgf.txt", stringsAsFactors = F)
+sigs_raw_gaublomme <- sigs_raw_gaublomme %>% mutate(sig_name = paste(V1, V2, sep = "-")) %>% group_by(sig_name) %>% summarise(genes = paste(V3, collapse = ","))
+signature_list_1 <- strsplit(sigs_raw_gaublomme$genes, split = ",")
+names(signature_list_1) <- sigs_raw_gaublomme$sig_name
+# proliferating from our clustering
+sigs_proliferating_raw <- readRDS("../../2_pipeline/differential_expression/Cluster_UT_GFPpos_inter/2020-04-16/results.rds")
+tmp <- sigs_proliferating_raw[["7"]]### cluster 7 is the proliferating cluster
+sigs_proliferating <- list("Proliferating" = rownames(tmp[tmp$logFC > log2(1.5) & tmp$FDR < 0.05, ]))
+# interferon (Alex)
+sheet_names <- getSheetNames("../../0_data/gene_lists/signatures/Interferon_signatures.xlsx")
+sigs_raw_interferon <- lapply(sheet_names, function(x){read.xlsx("../../0_data/gene_lists/signatures/Interferon_signatures.xlsx", sheet = x)})
+signature_list_2 <- lapply(sigs_raw_interferon, function(x){as.character(x[,1])})
+names(signature_list_2) <- sheet_names
+# pathogenic th17
+sigs_patho17 <- list("Pathogenic_Th17" = c("Cxcl3", "Il22", "Il3", "Ccl4", "Gzmb", "Lrmp", "Ccl5", "Casp1", "Csf2", "Ccl3", "Tbx21", "lcos", "ll7r", "Stat4", "Lgals3", "Lag3"))
+
+signature_list <- c(signature_list_1, signature_list_2, sigs_proliferating, sigs_patho17)
+
+#### fgsea
+for (cell_type in cell_type_vec) {
+  res_edger_df <- readRDS(file = paste0(dir_out, "de_edger_", cell_type, "_", e, "_", date_de, ".rds"))
+  fgsea_stats <- ifelse(res_edger_df$table$logFC > 0, res_edger_df$table$LR, -res_edger_df$table$LR)
+  names(fgsea_stats) <- toupper(rownames(res_edger_df$table))
+  fgsea_stats <- sort(fgsea_stats)
+  db <- lapply(signature_list, toupper)
+  test_out <- fgsea(pathways = db, stats = fgsea_stats, nperm = 100000)
+  saveRDS(test_out, file = paste0(dir_out, "fGSEA_", cell_type, "_", today, ".rds"))
+}
+```
+
+
