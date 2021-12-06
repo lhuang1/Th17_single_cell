@@ -106,7 +106,7 @@ Make PCA plots for PC2vPC1
 plotPCA.mystyle(rld, intgroup=c("treatment","rep"),PC_x = 1, PC_y = 2,ntop=50000)+theme_bw()
 plotPCA(rld,intgroup=c("treatment","rep"),ntop=50000)
 
-pdf(file = paste0("../../3_output/Figure_5/Fig5_I.pdf"), 
+pdf(file = paste0("../../3_output/Figure_5/Fig5I.pdf"), 
     width = 5, height = 4)
 plotPCA.mystyle(rld, intgroup=c("treatment","rep"),PC_x = 1, PC_y = 2,ntop=50000)+theme_bw()
 dev.off()
@@ -329,7 +329,7 @@ p <- pheatmap(t(GREAT_peaks_z_selected),cluster_rows = T, cluster_col=F,
          border_color=NA, color=myColor, breaks=myBreaks, show_rownames = 
            TRUE, show_colnames = TRUE, fontsize=10)
 
-pdf("../../output/Figure_5/Fig5_J.pdf", width = 8, height = 4)
+pdf("../../output/Figure_5/Fig5J.pdf", width = 8, height = 4)
 grid.arrange(p$gtable)
 dev.off()
 ```
@@ -386,7 +386,7 @@ p <- pheatmap(sig_scores_z,cluster_rows = FALSE, cluster_col=TRUE,
            TRUE, show_colnames = TRUE, fontsize=10)
 
 today <- Sys.Date()#"2020-12-09"
-pdf(paste0(dir_proj, "3_output/Figure_S7/FigS7_K.pdf"),
+pdf(paste0(dir_proj, "3_output/Figure_S7/FigS7K.pdf"),
     width = 5, #inches
     height = 3)
 grid.arrange(p$gtable)
