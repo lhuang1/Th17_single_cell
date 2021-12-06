@@ -1,19 +1,4 @@
-##### process data and stain for cxcl16 #####
-
-## Methods:
-# After we fixed bead synthesis errors, gene expression was quantified using Drop-seq software, using the parameter of ‘min_num_genes_per_cell = 500’ 
-# for B6 EAE studies and ‘min_num_genes_per_cell = 200’ otherwise. 
-# Using Seurat60,61, the expression matrices of samples were log-normalized and doublets removed.
-# Canonical correlation analysis60 was performed to correct for batch effects and to integrate different samples within each dataset. 
-# After the integration of different samples within each dataset, principal component analysis was performed to determine the number of 
-# principal components (PCs) to use during the dimension reduction and clustering analysis. In all cases, the first 15 PCs were used. 
-# To cluster cells, the Louvain algorithm was applied to the integrated datasets with a resolution parameter of 0.5. 
-# After clustering, the MAST algorithm62 was used to conduct differential expression analysis for each cluster compared to all other cells. 
-# The results of the differential expression analysis were used in further downstream analysis. Visualization was performed using tSNE63,64. 
-# To generate pseudotime series analyses, Monocle (v3.9)65,66,67 was used to define genes that were differentially expressed during pseudotime states. 
-# Statistics for pseudotime analyses were determined using the Benjamini–Hochberg test.
-# Following cell type classification, only cortical and cerebellar astrocytes were analysed from dataset in this study.
-
+##### process data, clustering and stain for Cxcl16 #####
 
 ### configuration
 rm(list = ls())
@@ -77,8 +62,6 @@ so_list <- lapply(names(so_list), function(i) {
   cat(i, "\n")
   x <- so_list[[i]]
   x$orig.ident <- i
-  # x[["percent.mt"]] <- PercentageFeatureSet(x, pattern = "^Mt-")
-  # x <- subset(pbmc, subset = nFeature_RNA > 400 & percent.mt < 5)
   x <- subset(x, subset = nFeature_RNA > 400)
   x <- NormalizeData(x)
   x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)

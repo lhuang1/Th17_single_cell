@@ -10,7 +10,6 @@ setwd("/singerlab/linglin/Th17_single_cell_eae_ut/")
 library(Seurat)
 library(ggplot2)
 library(gridExtra)
-# library(ggsignif)
 library(dplyr)
 library(openxlsx)
 source("1_code/utils.R")
@@ -22,8 +21,6 @@ today <- "2020-06-01"
 dir_out <- paste0("2_pipeline/human_shafflick/", today, "/")
 if (!dir.exists(dir_out)) dir.create(dir_out, recursive = T)
 
-# g_vec <- c("CXCR6", "SLAMF6", "CSF2", "IFNGR1", "IL23R", "IL17A", "IL17F", "RORC", "RORA", "IFNG", "TBX21")
-
 dir_raw <- "0_data/other/Schafflick_GSE130119_RAW/"
 fnames_vec <- list.files(dir_raw, pattern = "*.gz")
 
@@ -32,60 +29,50 @@ samples_pbmcs <- c('MS19270_PBMCs', 'MS49131_PBMCs','MS71658_PBMCs','MS60249_PBM
 
 samples_all <- c(samples_csf, samples_pbmcs)
 
-# data_raw <- list()
-# for (data_name in samples_all) {
-#   cat("Reading", data_name, "...\n")
-#   gsm <- gsub("_.*$", "", fnames_vec[grep(data_name, fnames_vec)[1]])
-#   mtx <- Matrix::readMM(file = paste0(dir_raw, gsm, "_", data_name, "_GRCh38_matrix.mtx.gz"))
-#   cell_names <- readLines(paste0(dir_raw, gsm, "_", data_name, "_GRCh38_barcodes.tsv.gz"))
-#   colnames(x = mtx) <- paste0(data_name, "_", cell_names)
-#   feature_names <- read.table(gzfile(paste0(dir_raw, gsm, "_", data_name, "_GRCh38_genes.tsv.gz")), stringsAsFactors = F)[,2]
-#   rownames(x = mtx) <- feature_names
-#   data_raw[[data_name]] <- mtx
-# }
-# 
-# 
-# # sapply(data_raw, ncol) %>% sum
-# 
-# for (i in names(data_raw)) {
-#   cat("\n\n", i, "\n")
-#   x <- CreateSeuratObject(data_raw[[i]])
-#   data_raw[[i]] <- NULL
-#   x$orig.ident <- i
-#   # x[["percent.mt"]] <- PercentageFeatureSet(x, pattern = "^MT-")
-#   # x <- subset(x, subset = nFeature_RNA > 400 & percent.mt < 5)
-#   x <- SCTransform(x)
-#   saveRDS(x, paste0(dir_out, i, "_sctransformed.rds"))
-# }
+## load raw data
+data_raw <- list()
+for (data_name in samples_all) {
+  cat("Reading", data_name, "...\n")
+  gsm <- gsub("_.*$", "", fnames_vec[grep(data_name, fnames_vec)[1]])
+  mtx <- Matrix::readMM(file = paste0(dir_raw, gsm, "_", data_name, "_GRCh38_matrix.mtx.gz"))
+  cell_names <- readLines(paste0(dir_raw, gsm, "_", data_name, "_GRCh38_barcodes.tsv.gz"))
+  colnames(x = mtx) <- paste0(data_name, "_", cell_names)
+  feature_names <- read.table(gzfile(paste0(dir_raw, gsm, "_", data_name, "_GRCh38_genes.tsv.gz")), stringsAsFactors = F)[,2]
+  rownames(x = mtx) <- feature_names
+  data_raw[[data_name]] <- mtx
+}
 
-# so_list <- lapply(samples_all, function(i){
-#   readRDS(paste0(dir_out, i, "_sctransformed.rds"))
-# })
-# names(so_list) <- samples_all
-# 
-# ## integration
-# so_features <- SelectIntegrationFeatures(object.list = so_list, nfeatures = Inf)
-# so_list <- PrepSCTIntegration(object.list = so_list, anchor.features = so_features,
-#                               verbose = FALSE)
-# so_anchors_CSF <- FindIntegrationAnchors(object.list = so_list[grep("CSF", names(so_list))], normalization.method = "SCT",
-#                                      anchor.features = so_features, verbose = TRUE)
-# so_anchors_PBMCs <- FindIntegrationAnchors(object.list = so_list[grep("PBMCs", names(so_list))], normalization.method = "SCT",
-#                                          anchor.features = so_features, verbose = TRUE)
-# saveRDS(so_anchors_CSF, file = paste0(dir_out, "so_anchors_CSF.rds"))
-# saveRDS(so_anchors_PBMCs, file = paste0(dir_out, "so_anchors_PBMCs.rds"))
-# 
-# rm(so_list)
-# # so_anchors_CSF <- readRDS(file = paste0(dir_out, "so_anchors_CSF.rds"))
-# so_combined_CSF <- IntegrateData(anchorset = so_anchors_CSF, normalization.method = "SCT",
-#                              verbose = TRUE)
-# rm(so_anchors_CSF)
-# saveRDS(so_combined_CSF, file = paste0(dir_out, "so_combined_CSF.rds"))
-# 
-# # so_anchors_PBMCs <- readRDS(file = paste0(dir_out, "so_anchors_PBMCs.rds"))
-# so_combined_PBMCs <- IntegrateData(anchorset = so_anchors_PBMCs, normalization.method = "SCT",
-#                                    verbose = TRUE)
-# rm(so_anchors_PBMCs)
-# saveRDS(so_combined_PBMCs, file = paste0(dir_out, "so_combined_PBMCs.rds"))
+## convert to Seurat object and normalize
+for (i in names(data_raw)) {
+  cat("\n\n", i, "\n")
+  x <- CreateSeuratObject(data_raw[[i]])
+  data_raw[[i]] <- NULL
+  x$orig.ident <- i
+  x <- SCTransform(x)
+  saveRDS(x, paste0(dir_out, i, "_sctransformed.rds"))
+}
+
+## integrate data
+so_list <- lapply(samples_all, function(i){
+  readRDS(paste0(dir_out, i, "_sctransformed.rds"))
+})
+names(so_list) <- samples_all
+so_features <- SelectIntegrationFeatures(object.list = so_list, nfeatures = Inf)
+so_list <- PrepSCTIntegration(object.list = so_list, anchor.features = so_features,
+                              verbose = FALSE)
+so_anchors_CSF <- FindIntegrationAnchors(object.list = so_list[grep("CSF", names(so_list))], normalization.method = "SCT",
+                                     anchor.features = so_features, verbose = TRUE)
+so_anchors_PBMCs <- FindIntegrationAnchors(object.list = so_list[grep("PBMCs", names(so_list))], normalization.method = "SCT",
+                                         anchor.features = so_features, verbose = TRUE)
+rm(so_list)
+
+so_combined_CSF <- IntegrateData(anchorset = so_anchors_CSF, normalization.method = "SCT", verbose = TRUE)
+rm(so_anchors_CSF)
+saveRDS(so_combined_CSF, file = paste0(dir_out, "so_combined_CSF.rds"))
+
+so_combined_PBMCs <- IntegrateData(anchorset = so_anchors_PBMCs, normalization.method = "SCT",verbose = TRUE)
+rm(so_anchors_PBMCs)
+saveRDS(so_combined_PBMCs, file = paste0(dir_out, "so_combined_PBMCs.rds"))
 
 
 ##### Clustering #########
@@ -99,20 +86,16 @@ cluster_markers <- lapply(cluster_name_vec, function(cluster_name) {
     select(gene) %>% unlist %>% as.character()
 })
 names(cluster_markers) <- cluster_name_vec
-n <- 200
+n <- 200 ## only use top 200 up-regulated genes
 cluster_markers_n <- lapply(cluster_markers, function(x){x[1:min(n, length(x))]})
 
-
-# c7_sig_mouse <- readRDS("2_pipeline/other/c7_mouse_signatures.rds")
+## load signatures
 c7_sig_human <- readRDS("2_pipeline/other/c7_human_signatures.rds")
-# th17_sig_names_mouse <- c("GSE11924_TFH_VS_TH17_CD4_TCELL", "GSE11924_TH1_VS_TH17_CD4_TCELL_DN", "GSE14026_TH1_VS_TH17_DN", "GSE14308_TH17_VS_NAIVE_CD4_TCELL_UP")
 th17_sig_names_human <- c("GSE32901_NAIVE_VS_TH17_ENRICHED_CD4_TCELL_DN", "GSE32901_TH17_EMRICHED_VS_TH17_NEG_CD4_TCELL_UP", "GSE32901_TH1_VS_TH17_ENRICHED_CD4_TCELL_DN")
-# th17_sig <- c(mouse_to_human(c7_sig_mouse[th17_sig_names_mouse]), c7_sig_human[th17_sig_names_human])
 th17_sig <- c7_sig_human[th17_sig_names_human]
 
 
 tissue_vec <- c("PBMCs", "CSF")
-
 for (tissue in tissue_vec) {
   so_combined <- readRDS(file = paste0(dir_out, "so_combined_", tissue, ".rds"))
   DefaultAssay(so_combined) <- "integrated"

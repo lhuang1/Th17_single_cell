@@ -3,13 +3,7 @@ rm(list = ls())
 setwd("/singerlab/linglin/Th17_single_cell_eae_ut/")
 
 library(Seurat)
-library(ggplot2)
-library(gridExtra)
-library(ggsignif)
 library(dplyr)
-library(tibble)
-library(openxlsx)
-source("1_code/utils.R")
 
 
 today <- "2020-07-23"
@@ -34,16 +28,6 @@ colnames(d)[1] <- "gene"
 # ## check expression for duplicated gene names
 dup_idx <- duplicated(d$gene) %>% which()
 dup_gene <- unique(d$gene[dup_idx])
-# dup_dist <- sapply(dup_gene, function(i) {
-#   d_sub <- d[d$gene == i,-1]
-#   dist(d_sub) %>% as.numeric() %>% sum
-# })
-# dup_total <- sapply(dup_gene, function(i) {
-#   d_sub <- d[d$gene == i,-1]
-#   sum(d_sub)
-# })
-# all(which(dup_dist > 0) == which(dup_total > 0))
-# # seems that if a gene is detected, then two rows can be different, thus take the summation
 ## add up duplicated genes
 for (g in dup_gene) {
   d[d$gene == g, -1] <- rep(colSums(d[d$gene == g, -1]), sum(d$gene == g)) %>% matrix(., ncol = ncol(d) - 1, byrow = T)
@@ -53,8 +37,6 @@ rownames(d) <- d$gene
 d <- d[,colnames(d) != "gene"]
 d <- as.sparse(d)
 saveRDS(d, file = paste0(dir_out, "count_matrix_", today, ".rds"))
-
-# d <- readRDS(file = paste0(dir_out, "count_matrix_", today, ".rds"))
 
 
 #### preprocessing

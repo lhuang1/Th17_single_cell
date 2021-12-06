@@ -1,6 +1,7 @@
+## configuration
 rm(list = ls())
-
 setwd("/singerlab/linglin/Th17_single_cell_eae_ut/")
+
 library(Seurat)
 library(dplyr)
 

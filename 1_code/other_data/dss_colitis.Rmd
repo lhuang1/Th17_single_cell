@@ -6,13 +6,12 @@ output: html_notebook
 Th17 cells in colon from mice with and without DSS colitis.
 
 ```{r}
-rm(list = setdiff(ls(), "so_all"))
+rm(list = ls())
 dir_proj <- "/singerlab/linglin/Th17_single_cell_eae_ut"
 
 suppressPackageStartupMessages({
   library(Seurat)
   library(ggplot2)
-  library(psych)
   source("../utils.R")
   source("../preprocessing/utils.R")
   source("../clustering/clustering_utils.R")

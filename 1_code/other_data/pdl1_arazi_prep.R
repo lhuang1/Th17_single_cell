@@ -1,19 +1,9 @@
-### Arazi data
-
 ## configuration
-rm(list = setdiff(ls(), "so"))
+rm(list = ls())
 setwd("/singerlab/linglin/Th17_single_cell_eae_ut/")
 
 library(Seurat)
-library(ggplot2)
-library(gridExtra)
-library(ggsignif)
 library(dplyr)
-library(tibble)
-library(openxlsx)
-library(limma)
-source("1_code/utils.R")
-
 
 today <- "2020-07-23"
 dir_out <- paste0("2_pipeline/Pdl1_Arazi/")
