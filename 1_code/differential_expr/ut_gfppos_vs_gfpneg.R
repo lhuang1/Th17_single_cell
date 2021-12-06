@@ -1,6 +1,8 @@
 ###################################################################################
 ########    Differential Expression: GFP+ vs. GFP- in each tissue (UT) ############
 ###################################################################################
+## Identify differentially expressed genes in each tissue comparing UT GFP+ vs. UT GFP- cells
+## edgeR/QLF with cellular detection rate as covariate
 
 rm(list = ls())
 
@@ -16,41 +18,36 @@ library(edgeR)
 library(openxlsx)
 set.seed(1)
 
-# configure output directories
+# configuration
 today <- Sys.Date()
-
+prep_date <- "2020-03-24"
+cluster_date <- "2020-03-25"
 dir_out <- paste0("2_pipeline/differential_expression/UT_GFPpos_vs_GFPneg/", today, "/")
 if (!dir.exists(dir_out)) {
   dir.create(dir_out, recursive = T)
 }
 
 ### load data
-## expression
-# so_all <- readRDS("for_paper/results/preprocessing/so_processed_dominant_TCR_2020-03-24.rds")
-# DefaultAssay(object = so_all) <- "RNA"
-# so_all[["integrated"]] <- NULL
-# so_all <- so_all[,so_all$treatment == "UT"]
-so_all <- readRDS("th17_metabolomics/so_ut_RNA_proccessded_dominant_TCR_2020-03-24.rds")
-
+so_all <- readRDS(paste0("2_pipeline/preprocessing/so_processed_dominant_TCR_", prep_date, ".rds"))
+## use clsuter annotation to filter out non-conventional Th17 cells (Treg-like and proliferating clusters)
 cluster_ann <- read.xlsx(paste0("2_pipeline/clustering/UT_GFPall_intra/2020-03-25/cluster_annotation.xlsx"), sheet = "processed")
 cluster_ann$tissue <- sub("_.*", "", cluster_ann$Cluster)
 cluster_ann_conv <- cluster_ann %>% filter(!(Annotation %in% c("Proliferating", "Treg-like")))
 
 ########Differential Expression#########
 gene_prefilter <- 0.1 # a gene should be detected by this proportion in at least one of the GFP+ or GFP- groups
-tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL")
-
 ### prefilter genes
 prop_pos <- Matrix::rowMeans(so_all@assays$RNA@counts[,so_all$GFP_positive] > 0)
 prop_neg <- Matrix::rowMeans(so_all@assays$RNA@counts[,!so_all$GFP_positive] > 0)
 keep <- (prop_pos > gene_prefilter) | (prop_neg > gene_prefilter)
 so_all <- subset(so_all, features = which(keep))
 
-
+tissue_vec <- c("SPL", "PP", "MLN", "SI", "COL")
 for (tissue in tissue_vec) {
   cat("\n=======", tissue, "=========\n")
   ### subset data
-  meta_tissue <- read.table(paste0("2_pipeline/clustering/UT_GFPall_intra/2020-03-25/FILES/", tissue, "/meta_data.csv"), sep = ",", header = T, row.names = 1)
+  meta_tissue <- read.table(paste0("2_pipeline/clustering/UT_GFPall_intra/", cluster_date, "/FILES/", tissue, "/meta_data.csv"), 
+                            sep = ",", header = T, row.names = 1)
   conv_clusters <- as.character(cluster_ann_conv$Cluster[(cluster_ann_conv$tissue == tissue)])
   meta_tissue$tissue_cluster <- paste(meta_tissue$tissue, meta_tissue$seurat_clusters, sep = "_")
   meta_tissue <- meta_tissue[meta_tissue$tissue_cluster %in% conv_clusters,]
@@ -61,7 +58,6 @@ for (tissue in tissue_vec) {
   so$batch <- factor(so$batch)
   contrasts(so$batch) = contr.sum(nlevels(so$batch))
   so$GFP_positive <- factor(so$GFP_positive, levels = c(FALSE, TRUE))
-
   
   ### run edgeR
   # Create a DGEList data object.
@@ -82,15 +78,4 @@ for (tissue in tissue_vec) {
   qlf <- glmQLFTest(fit, coef = 2)
   res <- topTags(qlf, n = Inf, adjust.method = "BH", sort.by = "none", p.value = 1)
   saveRDS(res, file = paste0(dir_out, tissue, "_results.rds"))
-  # tmp <- res$table %>% rownames_to_column(var = "gene") %>% filter(FDR < 0.05 & abs(logFC) > log2(1.5)) %>% arrange(-logFC)
-  # write.csv(tmp, file = paste0(dir_out, tissue, "_deg.csv"))
 }
-
-
-sapply(tissue_vec, function(tissue) {
-  meta_tissue <- read.table(paste0("2_pipeline/clustering/UT_GFPall_intra/2020-03-25/FILES/", tissue, "/meta_data.csv"), sep = ",", header = T, row.names = 1)
-  conv_clusters <- as.character(cluster_ann_conv$Cluster[(cluster_ann_conv$tissue == tissue)])
-  meta_tissue$tissue_cluster <- paste(meta_tissue$tissue, meta_tissue$seurat_clusters, sep = "_")
-  meta_tissue <- meta_tissue[meta_tissue$tissue_cluster %in% conv_clusters,]
-  nrow(meta_tissue)
-})

@@ -1,8 +1,8 @@
-################################################################
-########     Differential Expression: EAE vs. UT    ############
-################################################################
-
-## Identify differentially expressed genes comparing each cluster to all other clusters in EAE, GFP all, intra tissue clustering
+######################################################################################
+########     Differential Expression: EAE vs. UT (Stratify by Tissue)     ############
+######################################################################################
+## Identify differentially expressed genes in each tissue comparing EAE vs. UT GFP all
+## edgeR/QLF with cellular detection rate as covariate
 
 rm(list = ls())
 
@@ -16,26 +16,16 @@ library(dplyr)
 library(edgeR)
 set.seed(1)
 
-# configure output directories
-cargs <- commandArgs(trailingOnly = TRUE)
-if (length(cargs) == 0) {
-  today <- "2020-12-13"
-  clustering_date <- "2020-03-25"
-} else {
-  today <- cargs[1]
-  clustering_date <- cargs[2]
-}
-
+# configuration
+today <- Sys.Date()
+prep_date <- "2020-03-24"
 dir_out <- paste0("2_pipeline/differential_expression/EAE_vs_UT_GFPall/", today, "/")
 if (!dir.exists(dir_out)) {
   dir.create(dir_out, recursive = T)
 }
 
-
-
 ### load data
-so_all <- readRDS("2_pipeline/preprocessing/so_processed_dominant_TCR_2020-03-24.rds")
-
+so_all <- readRDS(paste0("2_pipeline/preprocessing/so_processed_dominant_TCR_", prep_date, ".rds"))
 
 ########Differential Expression#########
 tissue_vec <- c("SPL", "COL", "SI", "MLN", "PP")
@@ -48,7 +38,6 @@ for (tissue in tissue_vec) {
     Matrix::rowMeans(so_all[["RNA"]]@counts[,cells_to_use & so_all$treatment == x] > 0) 
   }) 
   genes_to_use <- (prop_mat > gene_prefilter) %>% Matrix::rowSums(.) > 0
-  
   
   #### run edgeR
   meta_sub <- so_all@meta.data[cells_to_use,c("treatment", "batch", "nFeature_RNA")]
