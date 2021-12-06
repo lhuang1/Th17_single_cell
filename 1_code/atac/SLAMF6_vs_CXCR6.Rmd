@@ -1,0 +1,394 @@
+---
+title: "Th17 CXCR6+ vs. SLAMF6+ ATACseq"
+output:
+  html_document:
+    df_print: paged
+---
+
+Load appropriate libraries
+```{r}
+library("DESeq2")
+library("pheatmap")
+library("ggplot2")
+library("genefilter")
+library("ggfortify")
+library("corrplot")
+library("gridExtra")
+library("tidyr")
+library("SummarizedExperiment")
+library("stringr")
+library("tidyverse")
+library("GenomicRanges")
+```
+
+
+Function for making PCA plot with customizable PC
+```{r}
+plotPCA.mystyle <-  function (object, intgroup = "condition", ntop = 50000, PC_x = 1, PC_y = 2,returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(scale(t(assay(object)[select, ])))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, 
+                                               drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC_horiz = pca$x[, PC_x], PC_vert = pca$x[, PC_y], group = group, 
+                  intgroup.df, name = colnames(object))
+if (returnData) {
+    attr(d, "percentVar") <- percentVar[,c(PC_x,PC_y)]
+    return(pca)
+  }
+  
+  xaxis_lab <- paste("PC ",PC_x,": ",sep="")
+  yaxis_lab <- paste("PC ",PC_y,": ",sep="")
+  
+  ggplot(data = d, aes_string(x = "PC_horiz", y = "PC_vert", color = intgroup[1], shape=intgroup[2])) + 
+    geom_point(size = 3) + xlab(paste0(xaxis_lab, round(percentVar[PC_x] * 100), "% variance")) + 
+    ylab(paste0(yaxis_lab, round(percentVar[PC_y] * 100), "% variance")) + coord_fixed() +theme_bw() +
+    # ylim(-40,40) + 
+    scale_color_manual(values = c("CXCR6+"="#DC143C", "SLAMF6+"="#1E90FF")) +
+    labs(color="Population",shape="Mouse")+ guides(shape = guide_legend(order = 2),col = guide_legend(order = 1))
+}
+```
+
+Counts file made from merged top 100k peaks from both conditions
+```{r}
+raw_counts <- read.table("Th17A42_Cxcr6_Slamf6.rawcounts.tab",row.names=1, header=FALSE)
+raw_counts <- raw_counts + 1
+
+##label the counts table
+colnames(raw_counts) <- c("CXCR6+_1","CXCR6+_2","CXCR6+_3","CXCR6+_4","SLAMF6+_5",
+                        "SLAMF6+_1","SLAMF6+_2","SLAMF6+_3","SLAMF6+_4","CXCR6+_5")
+
+colData <- c("CXCR6+_1","CXCR6+_2","CXCR6+_3","CXCR6+_4","SLAMF6+_5",
+                        "SLAMF6+_1","SLAMF6+_2","SLAMF6+_3","SLAMF6+_4","CXCR6+_5",
+             "CXCR6+","CXCR6+","CXCR6+","CXCR6+","SLAMF6+",
+             "SLAMF6+","SLAMF6+","SLAMF6+","SLAMF6+","CXCR6+",
+             "1","2","3","4","5",
+             "1","2","3","4","5")
+
+colData <- matrix(data=colData, nrow=10, ncol=3)
+colData <- data.frame(colData, row.names=1)
+colnames(colData) <- c("treatment","rep")
+countData <- raw_counts
+all(rownames(colData) %in% colnames(countData))
+countData <- countData[, rownames(colData)]
+all(rownames(colData) == colnames(countData))
+```
+
+Generate DESeq2 object and run
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = countData, colData = colData, design = ~ treatment)
+dds
+dds <- DESeq(dds)
+dds <- estimateSizeFactors(dds)
+```
+
+
+Generate log transformed data frame to use for PCAs and heatmaps
+```{r}
+rld <- rlog(dds, blind=FALSE)
+levels(rld$treatment)
+rld$treatment <- factor(rld$treatment, levels = c("SLAMF6+", "CXCR6+"))
+```
+
+Make PCA plots for PC2vPC1
+```{r}
+plotPCA.mystyle(rld, intgroup=c("treatment","rep"),PC_x = 1, PC_y = 2,ntop=50000)+theme_bw()
+plotPCA(rld,intgroup=c("treatment","rep"),ntop=50000)
+
+pdf(file = paste0("../../3_output/Figure_5/Fig5_I.pdf"), 
+    width = 5, height = 4)
+plotPCA.mystyle(rld, intgroup=c("treatment","rep"),PC_x = 1, PC_y = 2,ntop=50000)+theme_bw()
+dev.off()
+
+```
+
+
+Get PCA matrix
+```{r}
+rv <- rowVars(assay(rld))
+select <- order(rv, decreasing = TRUE)[seq_len(min(5000, 
+                                                   length(rv)))]
+pca <- prcomp(t(assay(rld)[select, ]))
+summary(pca)
+head(pca$rotation[,1])
+```
+
+Make a z-scored rld
+```{r}
+rld_df <- assay(rld, row.names=TRUE)
+rld_z <- apply(t(rld_df),2,scale)
+rownames(rld_z) <- colnames(rld)
+rld_z <- t(rld_z)
+```
+
+Subset peaks that are differentially accessible (FDR < 0.05 and fold change >4)
+```{r}
+res <- results(dds, contrast = c("treatment","CXCR6+","SLAMF6+"))
+head(res[order(res$padj),])
+sum(res$padj< 0.05, na.rm=TRUE)
+res_FDR <- subset(res,res$padj<0.05)
+write.table(res_FDR, "res_FDR.xls",sep="\t")
+res_FDR <- read.table("res_FDR.xls",sep="\t")
+
+res_FDR_up <- subset(res_FDR,res_FDR$log2FoldChange >= log2(2))
+res_FDR_down <- subset(res_FDR,res_FDR$log2FoldChange <= -log2(2))
+nrow(res_FDR_up) # lfc2=2192; lfc1=9320; fc3=4105
+nrow(res_FDR_down) # lfc2=2022; lfc1=8129; fc3=3649
+
+#rld_df <- rld_z[row.names(res_FDR),]
+rld_df = rld_z[c(row.names(res_FDR_up), row.names(res_FDR_down)),]
+df <- as.data.frame(colData(rld)[,c("treatment")])
+colnames(df) = c("treatment")
+rownames(df) <- colnames(rld_df)
+df$treatment <- factor(df$treatment, levels = c("SLAMF6+", "CXCR6+"))
+annotation_colors = list(treatment = c("SLAMF6+"="#1E90FF", "CXCR6+" = "#DC143C"))
+
+
+pdf("ATAC_FDR_FC2.pdf",         
+    width = 7,        #inches
+    height = 4)
+myColor <- colorRampPalette(c("darkblue", "white", "red"))(100)
+pheatmap(rld_df, cluster_rows=TRUE, show_rownames=FALSE, 
+         cluster_cols=TRUE, annotation_col=df, clustering_method="complete",annotation_colors = annotation_colors)
+dev.off()
+```
+
+Look at peaks that are most different - top 100 peaks
+-Majority of peaks are opened
+```{r}
+res_FDR <- subset(res,res$padj<0.05)
+res_FDR_top100 <-head(res_FDR[order(res_FDR$padj),],100)
+write.table(res_FDR_top100, "res_FDR_top100.xls",sep="\t")
+
+rld_df <- rld_z[row.names(res_FDR_top100),]
+df <- as.data.frame(colData(rld)[,c("treatment")])
+colnames(df) = c("treatment")
+rownames(df) <- colnames(rld_df)
+pheatmap(rld_df, cluster_rows=TRUE, show_rownames=FALSE, cluster_cols=FALSE, annotation_col=df, clustering_method="complete")
+
+pdf("ATAC_top100_FDR.pdf",         
+    width = 4,        #inches
+    height = 11)
+myColor <- colorRampPalette(c("darkblue", "white", "red"))(100)
+annotation_colors = list(treatment = c("CXCR6+" = "#DC143C", "SLAMF6+"="#1E90FF"))
+pheatmap(rld_df, cluster_rows=TRUE, show_rownames=FALSE, cluster_cols=TRUE, 
+         annotation_col=df, clustering_method="complete", 
+         fontsize = 8, border_color = NA, annotation_colors = annotation_colors)
+dev.off()
+```
+
+Associate DESeq peaks with RNA-seq genes
+```{r}
+#### Prepare input for GREAT run [1] peak to gene on peaks that are (1) up FDR<0.05, (2) down FDR<0.05, (3) up/down FDR<0.05, (4) all;
+####                             [2] gene to peak on all peaks
+#### BED format: chr1  10520283  10520490
+great_peaks_all <- data.frame(
+  chromosome = sub(":.*$", "", rownames(res)),
+  start = sub("-.*$", "", sub(".*:", "", rownames(res))),
+  end = sub(".*-", "", rownames(res)),
+  id = rownames(res)
+)
+great_peaks_FDR <- great_peaks_all[res$padj < 0.05 & !is.na(res$padj),] ## some peaks has NA pvalue/padj
+great_peaks_FDR_up <- great_peaks_all[res$padj < 0.05 & res$log2FoldChange > 0 & !is.na(res$padj),]
+great_peaks_FDR_down <- great_peaks_all[res$padj < 0.05 & res$log2FoldChange < 0 & !is.na(res$padj),]
+
+write.table(great_peaks_all, sep = "\t",
+            row.names = F, col.names = F, quote = F,
+            file = "great_input_peaks_all.bed")
+write.table(great_peaks_FDR, sep = "\t",
+            row.names = F, col.names = F, quote = F,
+            file = "great_input_peaks_FDR.bed")
+write.table(great_peaks_FDR_up, sep = "\t",
+            row.names = F, col.names = F, quote = F,
+            file = "great_input_peaks_FDR_up.bed")
+write.table(great_peaks_FDR_down, sep = "\t",
+            row.names = F, col.names = F, quote = F,
+            file = "great_input_peaks_FDR_down.bed")
+
+```
+
+```{r}
+#import DEG from RNA-seq data
+edgeR_res <- readRDS("../../2_pipeline/spl_clusters/bulk/2020-02-04/edger_slam_vs_cxcr6.rds")
+RNA_genes_df <- edgeR_res$table %>% 
+  tibble::rownames_to_column(var = "gene") %>% 
+  filter(abs(logFC) > log2(1.5) & edgeR_res$table$FDR < 0.05) %>%
+  top_n(100, wt = -PValue) %>% 
+  arrange(-logFC)
+  
+RNA_genes <- data.frame(V1 = RNA_genes_df$gene)
+```
+
+```{r}
+#Uploading GREAT's gene to peak association (multiple peaks/gene allowed) for all peaks in ATAC study
+#List contains all DEG genes
+GREAT_all_gene_to_peaks <- read.table("GREAT_all_gene_to_peak.txt", header=F, skip=1, sep="\t",stringsAsFactors = FALSE)
+GREAT_all_gene_to_peaks$peak1 <- str_split_fixed(as.character(GREAT_all_gene_to_peaks$V2), ' ',4)[,1]
+GREAT_all_gene_to_peaks$peak2 <- str_split_fixed(as.character(GREAT_all_gene_to_peaks$V2), ' ',4)[,3]
+# intersect(RNA_genes$V1,GREAT_all_gene_to_peaks$V1)
+
+gvec_tmp <- c("Il23r", "Il17a", "Il17f", "Csf2", "Ifng")
+
+#Select peaks associated with top DEG from RNA-seq 
+GREAT_peaks_RNA_genes <- GREAT_all_gene_to_peaks[GREAT_all_gene_to_peaks$V1 %in% c(as.character(RNA_genes$V1), gvec_tmp),]
+
+#Iterate through top DEGs and find the peak that has lowest FDR for differential accessiblity
+ATAC_gene_peaks <- as.data.frame(NULL)
+for (row in 1:length(GREAT_peaks_RNA_genes$V1)) {
+    # print(GREAT_peaks_RNA_genes$V1[row])
+  peak_list <- as.data.frame(str_split(GREAT_peaks_RNA_genes$V2[row], ", "))
+  colnames(peak_list) <- c("Peak_gene")
+  peak_list$Peak <- str_split_fixed(peak_list$Peak_gene, " ", 2)[,1]
+  peak_list$Dist <- str_split_fixed(peak_list$Peak_gene, " ", 2)[,2]
+  res_peaks <- res[peak_list$Peak,]
+  top_peak <- res_peaks[which.min(res_peaks$pvalue),] %>% data.frame()
+  top_peak$gene <- GREAT_peaks_RNA_genes$V1[row]
+  top_peak$peak <- rownames(top_peak)
+  ATAC_gene_peaks <- rbind(ATAC_gene_peaks,top_peak)
+}
+
+#Reorder DEG ATAC_gene_peaks to match order of heatmap genes, label rows and peaks
+row.names(ATAC_gene_peaks) <- ATAC_gene_peaks$gene
+ATAC_gene_peaks <- ATAC_gene_peaks[match(c(as.character(RNA_genes$V1), gvec_tmp), ATAC_gene_peaks$gene),]
+ATAC_gene_peaks <- ATAC_gene_peaks[complete.cases(ATAC_gene_peaks),]
+write.table(ATAC_gene_peaks, "ATAC_gene_peaks.xls", sep="\t")
+
+summary(ATAC_gene_peaks$padj)
+summary(ATAC_gene_peaks$log2FoldChange)
+
+ATAC_gene_peaks[gvec_tmp, "log2FoldChange"]
+```
+
+Generate a z-score of normalized log ATAC counts for DEG ATAC gene peaks
+```{r}
+#Could also have just subsetted original rld_z by ATAC_gene_peak peaks
+GREAT_peaks <- as.data.frame(NULL)
+GREAT_peaks <- assay(rld)[ATAC_gene_peaks$peak,]
+GREAT_peaks <- as.data.frame(GREAT_peaks)
+GREAT_peaks$peaks <- row.names(assay(rld)[ATAC_gene_peaks$peak,])
+
+GREAT_peaks$gene <- ATAC_gene_peaks$gene
+GREAT_peaks_z <- apply(t(GREAT_peaks[,rownames(colData)]),2,scale)
+rownames(GREAT_peaks_z) <- colnames(GREAT_peaks[,rownames(colData)])
+GREAT_peaks_z <- t(GREAT_peaks_z)
+row.names(GREAT_peaks_z) <- ATAC_gene_peaks$gene
+```
+
+
+heatmap of ATAC peak accessibility associated with DEG genes
+```{r}
+paletteLength <- 50
+myColor <- colorRampPalette(c("darkblue", "white", "red"))(paletteLength)
+#myBreaks centers z-score legend on zero (colored white)
+myBreaks <- c(seq(min(GREAT_peaks_z), 0, 
+                  length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(GREAT_peaks_z)/paletteLength, 
+                  max(GREAT_peaks_z), 
+                  length.out=floor(paletteLength/2)))
+p <- pheatmap(GREAT_peaks_z,cluster_rows = FALSE, cluster_col=TRUE, 
+         border_color=NA, color=myColor, breaks=myBreaks, show_rownames = 
+           TRUE, show_colnames = TRUE, fontsize=8)
+
+pdf("ATAC_gene_peaks_z.pdf",
+    width = 4, #inches
+    height = 11)
+grid.arrange(p$gtable)
+dev.off()
+```
+
+
+heatmap of ATAC peak accessibility associated with DEG genes (with manually selected genes)
+```{r}
+selected_genes <- openxlsx::read.xlsx(xlsxFile = "Genes_for_heatmap.xlsx", sheet = 1, rowNames = FALSE, colNames = FALSE)
+genes_to_plot <- setdiff(as.character(selected_genes$X2), c("Ckb", "Cd8b1", "Ctsd", "Il18rap")) %>% union(., c("Csf2", "Ifng"))
+
+range(abs(ATAC_gene_peaks[genes_to_plot,"log2FoldChange"]))
+
+
+GREAT_peaks_z_selected <- GREAT_peaks_z[genes_to_plot,]
+paletteLength <- 50
+myColor <- colorRampPalette(c("darkblue", "white", "red"))(paletteLength)
+#myBreaks centers z-score legend on zero (colored white)
+myBreaks <- c(seq(min(GREAT_peaks_z_selected), 0, 
+                  length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(GREAT_peaks_z_selected)/paletteLength, 
+                  max(GREAT_peaks_z_selected), 
+                  length.out=floor(paletteLength/2)))
+p <- pheatmap(t(GREAT_peaks_z_selected),cluster_rows = T, cluster_col=F, 
+         border_color=NA, color=myColor, breaks=myBreaks, show_rownames = 
+           TRUE, show_colnames = TRUE, fontsize=10)
+
+pdf("../../output/Figure_5/Fig5_J.pdf", width = 8, height = 4)
+grid.arrange(p$gtable)
+dev.off()
+```
+
+Prepare data for Il23 signature analysis
+```{r}
+## load signatures
+library(openxlsx)
+fname <- "/singerlab/linglin/Th17_single_cell_eae_ut/0_data/gene_lists/signatures/IL23_signatures.xlsx"
+sigs_to_plot_alex <- getSheetNames(fname)
+sigs_parsed_alex <- lapply(sigs_to_plot_alex, function(x){
+  tmp <- read.xlsx(fname, sheet = x, rowNames = F, colNames = F)[,1]
+  if (grepl("human", x)) {
+    genes <- human_to_mouse(tmp)
+  } else {
+    genes <- GREAT_all_gene_to_peaks$V1[match(toupper(tmp), toupper(GREAT_all_gene_to_peaks$V1))] %>% setdiff(., NA)
+  }
+  genes
+})
+names(sigs_parsed_alex) <- sigs_to_plot_alex
+sigs_parsed_all <- c(sigs_parsed_alex, sigs_parsed_allon)
+
+## load information about which signatures to plot and names to use
+sig_info <- read.xlsx(paste0(dir_proj, "2_pipeline/spl_clusters/Il23/Il23_signature_to_plot.xlsx"), sheet = "ATAC")
+sig_info$Our.name[sig_info$Our.name == "PID Il23"] <- "PID_IL23_PATHWAY_human"
+sigs_parsed <- sigs_parsed_all[sig_info$Our.name]
+names(sigs_parsed) <- sig_info$Name.in.Figure
+```
+
+heatmap of Il23 signature score using ATAC peak accessibility
+```{r}
+# compute signature score
+sig_scores <- sapply(names(sigs_parsed), function(i) {
+  sig_genes_i <- intersect(sigs_parsed[[i]], rownames(GREAT_peaks_Il23))
+  colMeans(GREAT_peaks_Il23[sig_genes_i,])
+})
+sig_scores_z <- t(apply(sig_scores, 2, scale))
+colnames(sig_scores_z) <- rownames(sig_scores)
+
+## fix name: no need to have "_1" in GSE39820_1
+rownames(sig_scores_z) <- sub("GSE39820_1", "GSE39820", rownames(sig_scores_z))
+
+# make plot
+paletteLength <- 50
+myColor <- colorRampPalette(c("darkblue", "white", "red"))(paletteLength)
+#myBreaks centers z-score legend on zero (colored white)
+myBreaks <- c(seq(min(sig_scores_z), 0, 
+                  length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(sig_scores_z)/paletteLength, 
+                  max(sig_scores_z), 
+                  length.out=floor(paletteLength/2)))
+p <- pheatmap(sig_scores_z,cluster_rows = FALSE, cluster_col=TRUE, 
+         border_color=NA, color=myColor, breaks=myBreaks, show_rownames = 
+           TRUE, show_colnames = TRUE, fontsize=10)
+
+today <- Sys.Date()#"2020-12-09"
+pdf(paste0(dir_proj, "3_output/Figure_S7/FigS7_K.pdf"),
+    width = 5, #inches
+    height = 3)
+grid.arrange(p$gtable)
+dev.off()
+```
