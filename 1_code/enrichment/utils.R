@@ -1,3 +1,4 @@
+## load and parse GO and KEGG pathways
 read_parse_db <- function(f) {
   db_raw <- read.table(f, sep = "@", stringsAsFactors = F)
   db_split <- strsplit(db_raw[,1], split = "\t")
