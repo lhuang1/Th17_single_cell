@@ -5,4 +5,6 @@ Schnell A, Huang L, Singer M, Singaraju A, Barilla RM, Regan BML, Bollhagen A, T
 
 Link to paper: https://doi.org/10.1016/j.cell.2021.11.018 
 
-Please contact linglin_huang@g.harvard.edu for questions regarding data processing and analysis.
+Fully processed data are available for download on Zenodo: https://doi.org/10.5281/zenodo.20647196
+
+Please contact lhuang@bwh.harvard.edu for questions regarding data processing and analysis.
